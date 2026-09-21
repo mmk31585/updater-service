@@ -11,17 +11,21 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+const (
+	subject = "update.command.node-1"
+	natsURL = nats.DefaultURL
+)
+
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	nc, err := nats.Connect(nats.DefaultURL)
+	nc, err := nats.Connect(natsURL)
 	if err != nil {
 		logger.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
 	defer nc.Close()
 
-	subject := "update.command.node-1"
 	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
 		var command message.UpdateCommand
 
