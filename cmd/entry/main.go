@@ -10,11 +10,13 @@ import (
 	"time"
 
 	"github.com/mmk31585/updater-service/internal/message"
+	"github.com/mmk31585/updater-service/internal/operation"
 	"github.com/nats-io/nats.go"
 )
 
 const (
 	subject = "update.command.node-1"
+	event   = "update.operation.events"
 	natsURL = nats.DefaultURL
 	addr    = ":8080"
 )
@@ -36,9 +38,85 @@ func main() {
 		os.Exit(1)
 	}
 	defer nc.Close()
+	store := operation.NewStore()
+	_, err = nc.Subscribe(
+		"update.operation.events",
+		func(msg *nats.Msg) {
+			var event message.OperationEvent
+
+			if err := json.Unmarshal(
+				msg.Data,
+				&event,
+			); err != nil {
+				logger.Error(
+					"failed to decode operation event",
+					"error", err,
+				)
+				return
+			}
+
+			logger.Info(
+				"received operation event",
+				"operation_id", event.OperationID,
+				"status", event.Status,
+			)
+
+			updated := store.UpdateStatus(
+				event.OperationID,
+				operation.Status(event.Status),
+			)
+
+			if !updated {
+				logger.Warn(
+					"operation not found",
+					"operation_id", event.OperationID,
+				)
+				return
+			}
+
+			logger.Info(
+				"operation status updated",
+				"operation_id", event.OperationID,
+				"status", event.Status,
+			)
+		},
+	)
+
+	if err != nil {
+		logger.Error(
+			"failed to subscribe to operation events",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /updates", func(w http.ResponseWriter, r *http.Request) {
-		handleCreateUpdate(w, r, nc, logger)
+		handleCreateUpdate(w, r, nc, store, logger)
+	})
+	mux.HandleFunc("GET /updates/{id}", func(
+		w http.ResponseWriter,
+		r *http.Request,
+	) {
+		id := r.PathValue("id")
+
+		op, ok := store.Get(id)
+		if !ok {
+			writeJSON(
+				w,
+				http.StatusNotFound,
+				map[string]string{
+					"error": "operation not found",
+				},
+			)
+			return
+		}
+
+		writeJSON(
+			w,
+			http.StatusOK,
+			op,
+		)
 	})
 	server := &http.Server{
 		Addr:              addr,
@@ -59,6 +137,7 @@ func handleCreateUpdate(
 	w http.ResponseWriter,
 	r *http.Request,
 	nc *nats.Conn,
+	store *operation.Store,
 	logger *slog.Logger,
 ) {
 	var req CreateUpdateRequest
@@ -101,12 +180,14 @@ func handleCreateUpdate(
 		)
 		return
 	}
-
 	command := message.UpdateCommand{
 		OperationID: operationID,
-		Service:     req.Service,
+		Service:     req.Service}
+	op := operation.Operation{
+		ID:     operationID,
+		Status: operation.StatusPending,
 	}
-
+	store.Create(op)
 	data, err := json.Marshal(command)
 	if err != nil {
 		logger.Error(
@@ -139,7 +220,7 @@ func handleCreateUpdate(
 		)
 		return
 	}
-
+	store.UpdateStatus(operationID, operation.StatusDispatched)
 	// Make sure the publish reached the NATS server.
 	if err := nc.Flush(); err != nil {
 		logger.Error(
