@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/mmk31585/updater-service/internal/message"
 	"github.com/nats-io/nats.go"
@@ -42,8 +43,41 @@ func main() {
 			"operation_id", command.OperationID,
 			"service", command.Service,
 		)
-	})
+		if err := publishOperationEvent(
+			nc,
+			command.OperationID,
+			"RUNNING",
+		); err != nil {
+			logger.Error(
+				"failed to publish RUNNING event",
+				"operation_id", command.OperationID,
+				"error", err,
+			)
+			return
+		}
 
+		// 2. Fake work.
+		time.Sleep(20 * time.Second)
+
+		// 3. Tell Entry that work has finished.
+		if err := publishOperationEvent(
+			nc,
+			command.OperationID,
+			"SUCCEEDED",
+		); err != nil {
+			logger.Error(
+				"failed to publish SUCCEEDED event",
+				"operation_id", command.OperationID,
+				"error", err,
+			)
+			return
+		}
+
+		logger.Info(
+			"operation succeeded",
+			"operation_id", command.OperationID,
+		)
+	})
 	if err != nil {
 		logger.Error("failed to subscribe", "error", err)
 		os.Exit(1)
@@ -62,4 +96,24 @@ func main() {
 	<-ctx.Done()
 
 	logger.Info("worker shutting down")
+}
+func publishOperationEvent(
+	nc *nats.Conn,
+	operationID string,
+	status message.OperationStatus,
+) error {
+	event := message.OperationEvent{
+		OperationID: operationID,
+		Status:      status,
+	}
+
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+
+	return nc.Publish(
+		"update.operation.events",
+		data,
+	)
 }
