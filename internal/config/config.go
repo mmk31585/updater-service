@@ -22,6 +22,7 @@ type ApplicationConfig struct {
 	File      FileConfig
 	Operation OperationConfig
 	Elastic   ElasticConfig
+	Services  ServicesConfig
 }
 type AppConfig struct {
 	AppName string
@@ -74,6 +75,12 @@ type OperationConfig struct {
 	OperationTimeout     time.Duration
 	CommandActionTimeout time.Duration
 	ProcessingTimeout    time.Duration
+	DockerRestartTimeout time.Duration
+	HealthCheckTimeout   time.Duration
+	HealthRequestTimeout time.Duration
+	RetryInitialDelay time.Duration
+	RetryMaxDelay     time.Duration
+	MaxHealthRetries  int
 }
 
 type ElasticConfig struct {
@@ -88,6 +95,9 @@ type ElasticConfig struct {
 	FlushInterval time.Duration
 	MaxRetries    int
 	DLQPath       string
+}
+type ServicesConfig struct {
+	ServicesRoot string
 }
 
 func init() {
@@ -152,6 +162,12 @@ func LoadConfig() (*ApplicationConfig, error) {
 		OperationTimeout:     GetDuration("OPERATION_TIMEOUT", 30*time.Minute),
 		CommandActionTimeout: GetDuration("COMMAND_ACK_TIMEOUT", 10*time.Second),
 		ProcessingTimeout:    GetDuration("PROCESSING_TIMEOUT", 10*time.Minute),
+		DockerRestartTimeout: GetDuration("DOCKER_RESTART_TIMEOUT", 15*time.Second),
+		HealthCheckTimeout:   GetDuration("HEALTH_CHECK_TIMEOUT", 15*time.Second),
+		HealthRequestTimeout: GetDuration("HEALTH_REQUEST_TIMEOUT", 2*time.Second),
+		RetryInitialDelay:    GetDuration("RETRY_INITIAL_DELAY", 1*time.Second),
+		RetryMaxDelay:        GetDuration("RETRY_MAX_DELAY", 4*time.Second),
+		MaxHealthRetries:     GetInt("MAX_HEALTH_RETRIES", 3),
 	}
 
 	ElasticConf := ElasticConfig{
@@ -167,7 +183,9 @@ func LoadConfig() (*ApplicationConfig, error) {
 		MaxRetries:    GetInt("ELASTIC_MAX_RETRIES", 5),
 		DLQPath:       GetString("ELASTIC_DLQ_PATH", "/tmp/update/es-dead-letter"),
 	}
-
+	ServicesConf := ServicesConfig{
+		ServicesRoot: GetString("SERVICES_ROOT", "./"),
+	}
 	return &ApplicationConfig{
 		App:       AppConf,
 		HTTP:      HTTPConf,
@@ -177,6 +195,7 @@ func LoadConfig() (*ApplicationConfig, error) {
 		File:      FileConf,
 		Operation: OperationConf,
 		Elastic:   ElasticConf,
+		Services:  ServicesConf,
 	}, nil
 }
 
