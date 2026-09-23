@@ -10,7 +10,9 @@ GO := go
 GOTEST := $(GO) test
 GOFMT := gofmt
 GOOSE := go run github.com/pressly/goose/v3/cmd/goose
+SWAG := swag
 
+OPENAPI_DIR := internal/openapi
 DOCKER_COMPOSE := docker compose
 
 ifneq ($(wildcard .env),)
@@ -18,7 +20,7 @@ ifneq ($(wildcard .env),)
   export $(shell sed 's/=.*//' .env)
 endif
 
-.PHONY: help build-entry build-worker build run-entry run-worker run test test-cover lint fmt fmt-check vet tidy deps clean migrate-up migrate-down migrate-status migrate-create docker-up docker-down docker-logs docker-up-entry docker-up-worker dev
+.PHONY: help build-entry build-worker build run-entry run-worker run test test-cover lint fmt fmt-check vet tidy deps clean swagger docs migrate-up migrate-down migrate-status migrate-create docker-up docker-down docker-logs docker-up-entry docker-up-worker docker-entry-logs docker-worker-logs dev
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -82,6 +84,14 @@ clean: ## Remove build artifacts
 	@rm -rf bin/
 	@rm -f coverage.out coverage.html
 	@echo "Clean complete."
+
+swagger: docs ## Generate OpenAPI/Swagger documentation (alias for docs)
+
+docs: ## Generate OpenAPI/Swagger documentation into internal/openapi
+	@echo "Generating OpenAPI/Swagger documentation..."
+	@$(SWAG) fmt -g cmd/entry/main.go
+	@$(SWAG) init -g $(ENTRY_DIR)/main.go -o $(OPENAPI_DIR)
+	@echo "Documentation generated in $(OPENAPI_DIR)/"
 
 migrate-up: ## Run database migrations up
 	@echo "Running migrations up..."

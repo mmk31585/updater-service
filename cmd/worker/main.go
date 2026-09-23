@@ -2,156 +2,96 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
-	"os/signal"
+	"time"
 
+	"github.com/mmk31585/updater-service/internal/config"
+	"github.com/mmk31585/updater-service/internal/db/mariadb"
 	"github.com/mmk31585/updater-service/internal/docker"
-	"github.com/mmk31585/updater-service/internal/message"
-	"github.com/nats-io/nats.go"
-)
-
-const (
-	CommandSubject = "update.command.node-1"
-	ResultSubject  = "update.result"
-	natsURL        = nats.DefaultURL
+	"github.com/mmk31585/updater-service/internal/fileops"
+	"github.com/mmk31585/updater-service/internal/filetransfer"
+	"github.com/mmk31585/updater-service/internal/healthcheck"
+	"github.com/mmk31585/updater-service/internal/logging"
+	nat "github.com/mmk31585/updater-service/internal/nats"
+	"github.com/mmk31585/updater-service/internal/operation"
+	"github.com/mmk31585/updater-service/internal/retry"
+	"github.com/mmk31585/updater-service/internal/search"
+	"github.com/mmk31585/updater-service/internal/worker"
+	natslib "github.com/nats-io/nats.go"
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+	cnf, err := config.LoadConfig()
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
 
-	nc, err := nats.Connect(natsURL)
+	logger := logging.NewLogger(cnf.App.AppName, cnf.App.AppEnv, cnf.Node.ID)
+
+	nc, err := nat.New(nat.Config{URL: natslib.DefaultURL}, logger)
 	if err != nil {
 		logger.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
 	}
 	defer nc.Close()
-	dockerRunner := docker.NewRunner()
-	_, err = nc.Subscribe(CommandSubject, func(msg *nats.Msg) {
-		handleCommand(nc, msg, dockerRunner, logger)
-	})
+
+	db, err := mariadb.New(&cnf.DB)
 	if err != nil {
-		logger.Error("failed to subscribe", "error", err)
+		logger.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	if err := mariadb.Migrate(db, os.Getenv("MIGRATIONS_DIR")); err != nil {
+		logger.Error("failed to run migrations", "error", err)
 		os.Exit(1)
 	}
 
-	logger.Info(
-		"worker started",
-		"subject", CommandSubject,
+	monitor := operation.NewTimeoutMonitor(
+		db,
+		cnf.Operation.OperationTimeout,
+		1*time.Minute,
 	)
-	ctx, stop := signal.NotifyContext(
-		context.Background(),
-		os.Interrupt,
-	)
-	defer stop()
+	go monitor.Run(context.Background())
 
-	<-ctx.Done()
-
-	logger.Info("worker shutting down")
-}
-
-func handleCommand(
-	nc *nats.Conn,
-	msg *nats.Msg,
-	runner *docker.Runner,
-	logger *slog.Logger,
-) {
-	var command message.UpdateCommand
-
-	if err := json.Unmarshal(
-		msg.Data,
-		&command,
-	); err != nil {
-		logger.Error(
-			"failed to decode update command",
-			"error", err,
-		)
-		return
+	elasticsearchURL := os.Getenv("ELASTICSEARCH_URL")
+	if elasticsearchURL == "" {
+		elasticsearchURL = cnf.Elastic.URL
 	}
 
-	logger.Info(
-		"received update command",
-		"operation_id", command.OperationID,
-		"service", command.Service,
-	)
-
-	// 1. Tell Entry that the work has started.
-	if err := publishResult(
-		nc,
-		command.OperationID,
-		"RUNNING",
-	); err != nil {
-		logger.Error(
-			"failed to publish RUNNING result",
-			"operation_id", command.OperationID,
-			"error", err,
-		)
-		return
-	}
-	//2. docker restart service
-	if err := runner.Restart(
-		context.Background(),
-		command.Service,
-	); err != nil {
-
-		logger.Error(
-			"docker restart failed",
-			"operation_id", command.OperationID,
-			"service", command.Service,
-			"error", err,
-		)
-		if publishErr := publishResult(
-			nc,
-			command.OperationID,
-			"FAILED",
-		); publishErr != nil {
-			logger.Error(
-				"failed to publish FAILED result",
-				"operation_id", command.OperationID,
-				"error", publishErr,
-			)
-		}
-
-		return
-	}
-	// 3. Tell Entry that the work succeeded.
-	if err := publishResult(
-		nc,
-		command.OperationID,
-		"SUCCEEDED",
-	); err != nil {
-		logger.Error(
-			"failed to publish SUCCEEDED result",
-			"operation_id", command.OperationID,
-			"error", err,
-		)
-		return
-	}
-
-	logger.Info(
-		"operation completed successfully",
-		"operation_id", command.OperationID,
-	)
-}
-func publishResult(
-	nc *nats.Conn,
-	operationID string,
-	status string,
-) error {
-	result := message.UpdateResult{
-		OperationID: operationID,
-		Status:      status,
-	}
-
-	data, err := json.Marshal(result)
+	searchClient, err := search.NewClient(elasticsearchURL)
 	if err != nil {
-		return err
+		logger.Error("failed to create Elasticsearch client", "error", err)
+		os.Exit(1)
 	}
 
-	if err := nc.Publish(ResultSubject, data); err != nil {
-		return err
-	}
+	srv := worker.New(worker.Config{
+		Logger:       logger,
+		NATS:         nc,
+		OpRepo:       operation.NewMariaDBRepository(db),
+		Downloader:   filetransfer.NewDownloader(),
+		DockerRunner: docker.NewRunner(cnf.Services.ServicesRoot),
+		HealthChecker: healthcheck.NewChecker(healthcheck.Config{
+			TotalTimeout:   cnf.Operation.HealthCheckTimeout,
+			RequestTimeout: cnf.Operation.HealthRequestTimeout,
+			MaxRetries:     cnf.Operation.MaxHealthRetries,
+			Backoff: retry.Backoff{
+				Initial: cnf.Operation.RetryInitialDelay,
+				Max:     cnf.Operation.RetryMaxDelay,
+			},
+		}),
+		FileDeployer: fileops.NewDeployer(),
+		StorageRoot:  cnf.Services.ServicesRoot,
+		OperationCfg: cnf.Operation,
+		SearchClient: searchClient,
+	})
 
-	return nc.Flush()
+	logger.Info("worker starting")
+
+	if err := srv.Run(context.Background()); err != nil {
+		logger.Error("worker failed", "error", err)
+		os.Exit(1)
+	}
 }
