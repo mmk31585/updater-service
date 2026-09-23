@@ -3,6 +3,7 @@ package entry
 import (
 	"context"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -10,10 +11,16 @@ import (
 )
 
 const (
-	internalBaseURL = "http://localhost:8080"
-	CommandSubject  = "update.command.node-1"
-	ResultSubject   = "update.result"
+	CommandSubject = "update.command.node-1"
+	ResultSubject  = "update.result"
 )
+
+func internalBaseURL() string {
+	if url := os.Getenv("INTERNAL_BASE_URL"); url != "" {
+		return url
+	}
+	return "http://localhost:8080"
+}
 
 type Server struct {
 	cfg Config

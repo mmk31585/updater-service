@@ -65,33 +65,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	searchClient, err := search.NewClient(cnf.Elastic.URL)
-	if err != nil {
-		logger.Error(
-			"failed to create Elasticsearch client",
-			"error", err,
+	var searchClient *search.Client
+
+	if cnf.Elastic.Enabled {
+		client, err := search.NewClient(cnf.Elastic.URL)
+		if err != nil {
+			logger.Error(
+				"failed to create Elasticsearch client",
+				"error", err,
+			)
+			os.Exit(1)
+		}
+
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second,
 		)
-		os.Exit(1)
-	}
+		defer cancel()
 
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		10*time.Second,
-	)
-	defer cancel()
+		if err := client.EnsureIndex(ctx); err != nil {
+			logger.Error(
+				"failed to ensure Elasticsearch index",
+				"error", err,
+			)
+			os.Exit(1)
+		}
 
-	if err := searchClient.EnsureIndex(ctx); err != nil {
-		logger.Error(
-			"failed to ensure Elasticsearch index",
-			"error", err,
+		searchClient = client
+		logger.Info(
+			"elasticsearch connected",
+			"url", cnf.Elastic.URL,
 		)
-		os.Exit(1)
+	} else {
+		logger.Info(
+			"elasticsearch disabled",
+		)
 	}
-
-	logger.Info(
-		"elasticsearch connected",
-		"url", cnf.Elastic.URL,
-	)
 
 	srv := entry.New(entry.Config{
 		Logger:          logger,
@@ -107,7 +116,7 @@ func main() {
 		MaxUploadSize:   config.ParseSize(cnf.File.MaxSize),
 	})
 
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {

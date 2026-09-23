@@ -80,7 +80,6 @@ func (s *Server) advanceStatus(
 
 	if err := s.cfg.SearchClient.IndexOperation(ctx, op); err != nil {
 		s.cfg.Logger.Error("failed to index in Elasticsearch", "error", err)
-		return false
 	}
 
 	return true

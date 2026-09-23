@@ -1,7 +1,8 @@
 FROM golang:1.27-alpine AS builder
 
 WORKDIR /app
-
+ENV GOPROXY=https://package-mirror.liara.ir/repository/go/                       
+ENV GOSUMDB=off
 COPY go.mod go.sum ./
 RUN go mod download
 

@@ -70,15 +70,17 @@ func advanceOperation(
 		return err
 	}
 
-	if err := searchClient.IndexOperation(ctx, op); err != nil {
-		logger.Error(
-			"failed to index operation in Elasticsearch",
-			"operation_id", id,
-			"status", status,
-			"error", err,
-		)
+	if searchClient != nil {
+		if err := searchClient.IndexOperation(ctx, op); err != nil {
+			logger.Error(
+				"failed to index operation in Elasticsearch",
+				"operation_id", id,
+				"status", status,
+				"error", err,
+			)
 
-		return nil
+			return nil
+		}
 	}
 
 	return nil
@@ -147,8 +149,10 @@ func (s *Server) handleCreateUpdate(c *gin.Context) {
 		return
 	}
 
-	if err := s.cfg.SearchClient.IndexOperation(c, op); err != nil {
-		s.cfg.Logger.Error("failed to index new operation", "operation_id", operationID, "error", err)
+	if s.cfg.SearchClient != nil {
+		if err := s.cfg.SearchClient.IndexOperation(c, op); err != nil {
+			s.cfg.Logger.Error("failed to index new operation", "operation_id", operationID, "error", err)
+		}
 	}
 
 	c.JSON(http.StatusAccepted, CreateUpdateResponse{
@@ -395,7 +399,7 @@ func (s *Server) handleServeFile(c *gin.Context) {
 
 	rangeHeader := c.Request.Header.Get("Range")
 	if rangeHeader == "" {
-		c.DataFromReader(http.StatusOK, fileSize, "application/octet-stream", file, nil)
+		c.DataFromReader(http.StatusOK, fileSize, "application/octet-stream", io.LimitReader(file, fileSize), nil)
 		return
 	}
 
@@ -422,7 +426,7 @@ func (s *Server) handleServeFile(c *gin.Context) {
 		return
 	}
 
-	c.DataFromReader(http.StatusPartialContent, contentLength, "application/octet-stream", file, nil)
+	c.DataFromReader(http.StatusPartialContent, contentLength, "application/octet-stream", io.LimitReader(file, contentLength), nil)
 }
 
 // handleSearchOperations searches recorded update operations.
@@ -560,7 +564,7 @@ func (s *Server) dispatchOperation(c *gin.Context, op operation.Operation, meta 
 	cmd := message.UpdateCommand{
 		OperationID: op.ID,
 		Service:     op.Service,
-		FileURL:     fmt.Sprintf("%s/internal/operations/%s/file", internalBaseURL, op.ID),
+		FileURL:     fmt.Sprintf("%s/internal/operations/%s/file", internalBaseURL(), op.ID),
 		FileName:    meta.FileName,
 		FileSize:    meta.FileSize,
 		FileSHA256:  meta.SHA256,

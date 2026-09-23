@@ -1,43 +1,57 @@
 services:
-  hello-service:
-    image: python:3-alpine
-    container_name: hello-service
+  nats:
+    image: nats:2.15-alpine
+    container_name: update-nats
     ports:
-      - "18080:8080"
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
     volumes:
-      - ./hello-service:/app:ro
-    working_dir: /app
-    command:
-      - python
-      - app.py
+      - nats_data:/data/jetstream
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:13
+    container_name: update-mariadb
     environment:
-      CONFIG_PATH: /app/config.yaml
-    restart: "no"
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: file_service
+      MYSQL_USER: app
+      MYSQL_PASSWORD: secret
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
 
-  config-service:
-    image: alpine:3.22
-    container_name: config-service
-    command:
-      - /bin/sh
-      - -c
-      - |
-        echo "config-service started"
-        while true; do
-          echo "config-service is alive: $(date)"
-          sleep 5
-        done
-    restart: "no"
+  data-service:
+    build:
+      context: ./docker/fake-services/data-service
+      dockerfile: Dockerfile
+    container_name: data-service
+    ports:
+      - "8081:8080"
+    environment:
+      CONFIG_PATH: /app/config
+    volumes:
+      - ./docker/fake-services/data-service:/app:ro
+    depends_on:
+      - nats
+      - mariadb
+    restart: unless-stopped
 
-  test-service:
-    image: alpine:3.22
-    container_name: test-service
-    command:
-      - /bin/sh
-      - -c
-      - |
-        echo "test-service started"
-        while true; do
-          echo "test-service is alive: $(date)"
-          sleep 5
-        done
-    restart: "no"
+volumes:
+  nats_data:
+  mariadb_data:

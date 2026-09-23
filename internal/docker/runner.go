@@ -17,7 +17,7 @@ func NewRunner(servicesRoot string) *Runner {
 		services: make(map[string]services.ServiceDefinition),
 	}
 
-	for _, name := range []string{"hello-service", "config-service", "test-service"} {
+	for _, name := range []string{"hello-service", "config-service", "test-service", "data-service"} {
 		if def, ok := services.NewServiceDefinition(servicesRoot, name); ok {
 			r.services[name] = def
 		}

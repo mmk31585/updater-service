@@ -8,3 +8,5 @@ var
 Makefile
 .dockerignore
 .gitignore
+test
+transfers
