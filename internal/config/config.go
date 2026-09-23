@@ -78,9 +78,9 @@ type OperationConfig struct {
 	DockerRestartTimeout time.Duration
 	HealthCheckTimeout   time.Duration
 	HealthRequestTimeout time.Duration
-	RetryInitialDelay time.Duration
-	RetryMaxDelay     time.Duration
-	MaxHealthRetries  int
+	RetryInitialDelay    time.Duration
+	RetryMaxDelay        time.Duration
+	MaxHealthRetries     int
 }
 
 type ElasticConfig struct {
