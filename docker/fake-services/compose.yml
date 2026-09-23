@@ -1,17 +1,17 @@
 services:
-
   hello-service:
-    image: alpine:3.22
+    image: python:3-alpine
     container_name: hello-service
+    ports:
+      - "18080:8080"
+    volumes:
+      - ./hello-service:/app:ro
+    working_dir: /app
     command:
-      - /bin/sh
-      - -c
-      - |
-        echo "hello-service started"
-        while true; do
-          echo "hello-service is alive: $(date)"
-          sleep 5
-        done
+      - python
+      - app.py
+    environment:
+      CONFIG_PATH: /app/config.yaml
     restart: "no"
 
   config-service:
