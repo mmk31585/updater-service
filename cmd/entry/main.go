@@ -1,24 +1,31 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/mmk31585/updater-service/internal/config"
 	"github.com/mmk31585/updater-service/internal/message"
 	"github.com/mmk31585/updater-service/internal/operation"
 	"github.com/nats-io/nats.go"
+
+	_ "github.com/go-sql-driver/mysql"
 )
 
 const (
-	subject = "update.command.node-1"
-	event   = "update.operation.events"
-	natsURL = nats.DefaultURL
-	addr    = ":8080"
+	CommandSubject = "update.command.node-1"
+	ResultSubject  = "update.result"
+	natsURL        = nats.DefaultURL
+	addr           = ":8080"
 )
 
 type CreateUpdateRequest struct {
@@ -38,53 +45,66 @@ func main() {
 		os.Exit(1)
 	}
 	defer nc.Close()
-	store := operation.NewStore()
+	cnf, err := config.LoadConfig()
+	if err != nil {
+		logger.Error(
+			"failed to initial config",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+	dsn := buildDSN(cnf.DB)
+
+	if dsn == "" {
+		dsn = "updates:updates@tcp(127.0.0.1:3306)/updates?parseTime=true&loc=UTC"
+	}
+
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		logger.Error(
+			"failed to open database",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+
+	defer db.Close()
+
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(time.Hour)
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		logger.Error(
+			"failed to connect to database",
+			"error", err,
+		)
+		os.Exit(1)
+	}
+
+	logger.Info("database connected")
+
+	repo := operation.NewMariaDBRepository(db)
 	_, err = nc.Subscribe(
-		"update.operation.events",
+		"update.result",
 		func(msg *nats.Msg) {
-			var event message.OperationEvent
-
-			if err := json.Unmarshal(
-				msg.Data,
-				&event,
-			); err != nil {
-				logger.Error(
-					"failed to decode operation event",
-					"error", err,
-				)
-				return
-			}
-
-			logger.Info(
-				"received operation event",
-				"operation_id", event.OperationID,
-				"status", event.Status,
-			)
-
-			updated := store.UpdateStatus(
-				event.OperationID,
-				operation.Status(event.Status),
-			)
-
-			if !updated {
-				logger.Warn(
-					"operation not found",
-					"operation_id", event.OperationID,
-				)
-				return
-			}
-
-			logger.Info(
-				"operation status updated",
-				"operation_id", event.OperationID,
-				"status", event.Status,
+			handleResult(
+				msg,
+				repo,
+				logger,
 			)
 		},
 	)
 
 	if err != nil {
 		logger.Error(
-			"failed to subscribe to operation events",
+			"failed to subscribe to result topic",
 			"error", err,
 		)
 		os.Exit(1)
@@ -92,32 +112,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /updates", func(w http.ResponseWriter, r *http.Request) {
-		handleCreateUpdate(w, r, nc, store, logger)
+		handleCreateUpdate(w, r, nc, repo, cnf.Node.ID, logger)
 	})
-	mux.HandleFunc("GET /updates/{id}", func(
-		w http.ResponseWriter,
-		r *http.Request,
-	) {
-		id := r.PathValue("id")
-
-		op, ok := store.Get(id)
-		if !ok {
-			writeJSON(
-				w,
-				http.StatusNotFound,
-				map[string]string{
-					"error": "operation not found",
-				},
-			)
-			return
-		}
-
-		writeJSON(
-			w,
-			http.StatusOK,
-			op,
-		)
-	})
+	mux.HandleFunc("GET /updates/{id}", func(w http.ResponseWriter, r *http.Request) { handleGetUpdate(w, r, repo) })
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -137,7 +134,8 @@ func handleCreateUpdate(
 	w http.ResponseWriter,
 	r *http.Request,
 	nc *nats.Conn,
-	store *operation.Store,
+	repo operation.Repository,
+	nodeID string,
 	logger *slog.Logger,
 ) {
 	var req CreateUpdateRequest
@@ -180,18 +178,49 @@ func handleCreateUpdate(
 		)
 		return
 	}
+
+	now := time.Now().UTC()
+
+	op := operation.Operation{
+		ID:        operationID,
+		Status:    operation.StatusPending,
+		Service:   req.Service,
+		NodeID:    nodeID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	ctx := r.Context()
+
+	// 1. Persist operation first.
+	if err := repo.Create(ctx, op); err != nil {
+		logger.Error(
+			"failed to create operation",
+			"operation_id", operationID,
+			"error", err,
+		)
+
+		writeJSON(
+			w,
+			http.StatusInternalServerError,
+			map[string]string{
+				"error": "failed to create operation",
+			},
+		)
+		return
+	}
+
+	// 2. Build command.
 	command := message.UpdateCommand{
 		OperationID: operationID,
-		Service:     req.Service}
-	op := operation.Operation{
-		ID:     operationID,
-		Status: operation.StatusPending,
+		Service:     req.Service,
 	}
-	store.Create(op)
+
 	data, err := json.Marshal(command)
 	if err != nil {
 		logger.Error(
 			"failed to encode command",
+			"operation_id", operationID,
 			"error", err,
 		)
 
@@ -205,26 +234,31 @@ func handleCreateUpdate(
 		return
 	}
 
+	// 3. Publish command.
+	subject := "update.command." + nodeID
+
 	if err := nc.Publish(subject, data); err != nil {
 		logger.Error(
 			"failed to publish command",
+			"operation_id", operationID,
 			"error", err,
 		)
 
+		// Operation remains PENDING.
 		writeJSON(
 			w,
 			http.StatusServiceUnavailable,
 			map[string]string{
-				"error": "failed to publish update",
+				"error": "failed to dispatch operation",
 			},
 		)
 		return
 	}
-	store.UpdateStatus(operationID, operation.StatusDispatched)
-	// Make sure the publish reached the NATS server.
+
 	if err := nc.Flush(); err != nil {
 		logger.Error(
 			"failed to flush NATS message",
+			"operation_id", operationID,
 			"error", err,
 		)
 
@@ -232,17 +266,28 @@ func handleCreateUpdate(
 			w,
 			http.StatusServiceUnavailable,
 			map[string]string{
-				"error": "failed to publish update",
+				"error": "failed to dispatch operation",
 			},
 		)
 		return
 	}
 
-	logger.Info(
-		"update accepted",
-		"operation_id", operationID,
-		"service", req.Service,
+	// 4. Mark operation as DISPATCHED.
+	_, err = repo.AdvanceStatus(
+		ctx,
+		operationID,
+		operation.StatusDispatched,
 	)
+	if err != nil {
+		logger.Error(
+			"failed to mark operation dispatched",
+			"operation_id", operationID,
+			"error", err,
+		)
+
+		// We don't fail the HTTP request here.
+		// Worker may already have moved it forward.
+	}
 
 	writeJSON(
 		w,
@@ -272,4 +317,118 @@ func writeJSON(
 	w.WriteHeader(status)
 
 	_ = json.NewEncoder(w).Encode(data)
+}
+func buildDSN(dbConf config.DBConfig) string {
+	host := dbConf.Host
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
+		dbConf.Username,
+		dbConf.Password,
+		host,
+		dbConf.Port,
+		dbConf.Name,
+	)
+}
+func handleGetUpdate(
+	w http.ResponseWriter,
+	r *http.Request,
+	repo operation.Repository,
+) {
+	id := r.PathValue("id")
+
+	op, err := repo.Get(
+		r.Context(),
+		id,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(
+				w,
+				http.StatusNotFound,
+				map[string]string{
+					"error": "operation not found",
+				},
+			)
+			return
+		}
+
+		writeJSON(
+			w,
+			http.StatusInternalServerError,
+			map[string]string{
+				"error": "failed to get operation",
+			},
+		)
+		return
+	}
+
+	type response struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}
+
+	writeJSON(
+		w,
+		http.StatusOK,
+		response{
+			ID:     op.ID,
+			Status: string(op.Status),
+		},
+	)
+}
+func handleResult(
+	msg *nats.Msg,
+	repo operation.Repository,
+	logger *slog.Logger,
+) {
+	var result message.UpdateResult
+
+	if err := json.Unmarshal(
+		msg.Data,
+		&result,
+	); err != nil {
+		logger.Error(
+			"failed to decode update result",
+			"error", err,
+		)
+		return
+	}
+
+	logger.Info(
+		"received update result",
+		"operation_id", result.OperationID,
+		"status", result.Status,
+	)
+
+	updated, err := repo.AdvanceStatus(
+		context.Background(),
+		result.OperationID,
+		operation.Status(result.Status),
+	)
+	if err != nil {
+		logger.Error(
+			"failed to update operation status",
+			"operation_id", result.OperationID,
+			"status", result.Status,
+			"error", err,
+		)
+		return
+	}
+
+	if !updated {
+		logger.Info(
+			"operation was not advanced",
+			"operation_id", result.OperationID,
+			"status", result.Status,
+		)
+		return
+	}
+
+	logger.Info(
+		"operation status updated",
+		"operation_id", result.OperationID,
+		"status", result.Status,
+	)
 }

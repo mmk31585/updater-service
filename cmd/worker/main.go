@@ -6,15 +6,16 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"time"
 
+	"github.com/mmk31585/updater-service/internal/docker"
 	"github.com/mmk31585/updater-service/internal/message"
 	"github.com/nats-io/nats.go"
 )
 
 const (
-	subject = "update.command.node-1"
-	natsURL = nats.DefaultURL
+	CommandSubject = "update.command.node-1"
+	ResultSubject  = "update.result"
+	natsURL        = nats.DefaultURL
 )
 
 func main() {
@@ -26,57 +27,9 @@ func main() {
 		os.Exit(1)
 	}
 	defer nc.Close()
-
-	_, err = nc.Subscribe(subject, func(msg *nats.Msg) {
-		var command message.UpdateCommand
-
-		if err := json.Unmarshal(msg.Data, &command); err != nil {
-			logger.Error(
-				"failed to decode message",
-				"error", err,
-			)
-			return
-		}
-
-		logger.Info(
-			"received update command",
-			"operation_id", command.OperationID,
-			"service", command.Service,
-		)
-		if err := publishOperationEvent(
-			nc,
-			command.OperationID,
-			"RUNNING",
-		); err != nil {
-			logger.Error(
-				"failed to publish RUNNING event",
-				"operation_id", command.OperationID,
-				"error", err,
-			)
-			return
-		}
-
-		// 2. Fake work.
-		time.Sleep(20 * time.Second)
-
-		// 3. Tell Entry that work has finished.
-		if err := publishOperationEvent(
-			nc,
-			command.OperationID,
-			"SUCCEEDED",
-		); err != nil {
-			logger.Error(
-				"failed to publish SUCCEEDED event",
-				"operation_id", command.OperationID,
-				"error", err,
-			)
-			return
-		}
-
-		logger.Info(
-			"operation succeeded",
-			"operation_id", command.OperationID,
-		)
+	dockerRunner := docker.NewRunner()
+	_, err = nc.Subscribe(CommandSubject, func(msg *nats.Msg) {
+		handleCommand(nc, msg, dockerRunner, logger)
 	})
 	if err != nil {
 		logger.Error("failed to subscribe", "error", err)
@@ -85,7 +38,7 @@ func main() {
 
 	logger.Info(
 		"worker started",
-		"subject", subject,
+		"subject", CommandSubject,
 	)
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
@@ -97,23 +50,108 @@ func main() {
 
 	logger.Info("worker shutting down")
 }
-func publishOperationEvent(
+
+func handleCommand(
+	nc *nats.Conn,
+	msg *nats.Msg,
+	runner *docker.Runner,
+	logger *slog.Logger,
+) {
+	var command message.UpdateCommand
+
+	if err := json.Unmarshal(
+		msg.Data,
+		&command,
+	); err != nil {
+		logger.Error(
+			"failed to decode update command",
+			"error", err,
+		)
+		return
+	}
+
+	logger.Info(
+		"received update command",
+		"operation_id", command.OperationID,
+		"service", command.Service,
+	)
+
+	// 1. Tell Entry that the work has started.
+	if err := publishResult(
+		nc,
+		command.OperationID,
+		"RUNNING",
+	); err != nil {
+		logger.Error(
+			"failed to publish RUNNING result",
+			"operation_id", command.OperationID,
+			"error", err,
+		)
+		return
+	}
+	//2. docker restart service
+	if err := runner.Restart(
+		context.Background(),
+		command.Service,
+	); err != nil {
+
+		logger.Error(
+			"docker restart failed",
+			"operation_id", command.OperationID,
+			"service", command.Service,
+			"error", err,
+		)
+		if publishErr := publishResult(
+			nc,
+			command.OperationID,
+			"FAILED",
+		); publishErr != nil {
+			logger.Error(
+				"failed to publish FAILED result",
+				"operation_id", command.OperationID,
+				"error", publishErr,
+			)
+		}
+
+		return
+	}
+	// 3. Tell Entry that the work succeeded.
+	if err := publishResult(
+		nc,
+		command.OperationID,
+		"SUCCEEDED",
+	); err != nil {
+		logger.Error(
+			"failed to publish SUCCEEDED result",
+			"operation_id", command.OperationID,
+			"error", err,
+		)
+		return
+	}
+
+	logger.Info(
+		"operation completed successfully",
+		"operation_id", command.OperationID,
+	)
+}
+func publishResult(
 	nc *nats.Conn,
 	operationID string,
-	status message.OperationStatus,
+	status string,
 ) error {
-	event := message.OperationEvent{
+	result := message.UpdateResult{
 		OperationID: operationID,
 		Status:      status,
 	}
 
-	data, err := json.Marshal(event)
+	data, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
 
-	return nc.Publish(
-		"update.operation.events",
-		data,
-	)
+	if err := nc.Publish(ResultSubject, data); err != nil {
+		return err
+	}
+
+	return nc.Flush()
 }
