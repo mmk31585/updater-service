@@ -1,0 +1,10 @@
+.git
+.idea
+bin
+data
+docker
+var
+*.md
+Makefile
+.dockerignore
+.gitignore

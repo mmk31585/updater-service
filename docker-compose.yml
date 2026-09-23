@@ -35,7 +35,75 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+    container_name: update-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+  entry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: update-entry
+    command: ["./entry"]
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ID: entry-node
+      NODE_ROLE: entry
+      APP_NAME: entry-service
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: file_service
+      DB_USER: app
+      DB_PASSWORD: secret
+      NATS_URL: nats://nats:4222
+      SERVICES_ROOT: /app/services
+    env_file: .env
+    depends_on:
+      nats:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: update-worker
+    command: ["./worker"]
+    environment:
+      NODE_ID: worker-node
+      NODE_ROLE: worker
+      APP_NAME: worker-service
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: file_service
+      DB_USER: app
+      DB_PASSWORD: secret
+      NATS_URL: nats://nats:4222
+      SERVICES_ROOT: /app/services
+    env_file: .env
+    depends_on:
+      nats:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
 
 volumes:
   nats_data:
   mariadb_data:
+  es_data:
