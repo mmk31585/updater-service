@@ -1,0 +1,303 @@
+basePath: /
+definitions:
+  entry.CreateUpdateRequest:
+    properties:
+      service:
+        enum:
+        - hello-service
+        - config-service
+        - test-service
+        example: hello-service
+        type: string
+    type: object
+  entry.CreateUpdateResponse:
+    properties:
+      operation_id:
+        example: op-3f2a91c0
+        type: string
+    type: object
+  entry.ErrorResponse:
+    properties:
+      error:
+        example: invalid request body
+        type: string
+    type: object
+  entry.FileUploadResponse:
+    properties:
+      file_name:
+        example: config.yaml
+        type: string
+      file_size:
+        example: 1048576
+        type: integer
+      operation_id:
+        example: op-3f2a91c0
+        type: string
+      sha256:
+        example: a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3
+        type: string
+    type: object
+  entry.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+    type: object
+  entry.OperationStatusResponse:
+    properties:
+      id:
+        example: op-3f2a91c0
+        type: string
+      status:
+        enum:
+        - PENDING
+        - DISPATCHED
+        - TRANSFERRED
+        - RUNNING
+        - BACKUP_CREATED
+        - APPLYING
+        - HEALTH_CHECKING
+        - SUCCEEDED
+        - FAILED
+        - ROLLING_BACK
+        - ROLLBACK_HEALTH_CHECKING
+        - ROLLED_BACK
+        - ROLLBACK_FAILED
+        example: PENDING
+        type: string
+    type: object
+  search.OperationDocument:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      node_id:
+        type: string
+      service:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  search.SearchResult:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/search.OperationDocument'
+        type: array
+      total:
+        type: integer
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Deploys configuration and binary updates to managed services. Clients
+    create
+  termsOfService: http://swagger.io/terms/
+  title: Updater Service API
+  version: 1.0.0
+paths:
+  /health:
+    get:
+      description: Returns the health status of the service.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/entry.HealthResponse'
+      summary: Health check
+      tags:
+      - Health
+  /internal/operations/{id}/file:
+    get:
+      description: Streams the update file for an operation. Supports HTTP range requests
+        and is
+      parameters:
+      - description: Operation ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: file
+        "404":
+          description: Not Found
+        "416":
+          description: Requested Range Not Satisfiable
+      summary: Download the uploaded update file
+      tags:
+      - Files
+  /operations:
+    get:
+      description: Searches update operations indexed in Elasticsearch. Results can
+        be filtered
+      parameters:
+      - description: Filter by service name
+        example: '"hello-service"'
+        in: query
+        name: service
+        type: string
+      - description: Filter by status
+        enum:
+        - PENDING
+        - DISPATCHED
+        - TRANSFERRED
+        - RUNNING
+        - BACKUP_CREATED
+        - APPLYING
+        - HEALTH_CHECKING
+        - SUCCEEDED
+        - FAILED
+        - ROLLING_BACK
+        - ROLLBACK_HEALTH_CHECKING
+        - ROLLED_BACK
+        - ROLLBACK_FAILED
+        example: '"PENDING"'
+        in: query
+        name: status
+        type: string
+      - description: Filter by worker node id
+        example: '"node-1"'
+        in: query
+        name: node_id
+        type: string
+      - default: 20
+        description: Maximum number of results
+        example: 20
+        in: query
+        name: limit
+        type: integer
+      - default: 1
+        description: Page number (1-based)
+        example: 1
+        in: query
+        name: page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/search.SearchResult'
+        "503":
+          description: search temporarily unavailable
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+      summary: Search update operations
+      tags:
+      - Operations
+  /updates:
+    post:
+      consumes:
+      - application/json
+      description: Creates a new pending update operation for a service and returns
+        a unique
+      parameters:
+      - description: Service to update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/entry.CreateUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/entry.CreateUpdateResponse'
+        "400":
+          description: invalid request body or missing service
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "500":
+          description: failed to create the operation
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+      summary: Create an update operation
+      tags:
+      - Operations
+  /updates/{id}:
+    get:
+      description: Returns the current status of the update operation identified by
+        id.
+      parameters:
+      - description: Operation ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/entry.OperationStatusResponse'
+        "404":
+          description: operation not found
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+      summary: Get update operation status
+      tags:
+      - Operations
+  /updates/{id}/file:
+    put:
+      consumes:
+      - multipart/form-data
+      description: Uploads the update file for a pending operation. Send it either
+        as
+      parameters:
+      - description: Operation ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Update file to upload
+        in: formData
+        name: file
+        required: true
+        type: file
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            $ref: '#/definitions/entry.FileUploadResponse'
+        "400":
+          description: missing file field or body too large
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "404":
+          description: operation not found
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "409":
+          description: operation is not pending
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "500":
+          description: storage or metadata failure
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "503":
+          description: failed to dispatch the operation
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+      summary: Upload an update file
+      tags:
+      - Files
+schemes:
+- http
+swagger: "2.0"
