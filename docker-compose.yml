@@ -36,7 +36,7 @@ services:
       start_period: 30s
     restart: unless-stopped
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
     container_name: update-elasticsearch
     environment:
       - discovery.type=single-node
@@ -72,6 +72,7 @@ services:
       DB_PASSWORD: secret
       NATS_URL: nats://nats:4222
       SERVICES_ROOT: /app/services
+      ELASTIC_URL: http://elasticsearch:9200
     env_file: .env
     depends_on:
       nats:
