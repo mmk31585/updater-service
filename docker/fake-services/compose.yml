@@ -1,0 +1,43 @@
+services:
+
+  hello-service:
+    image: alpine:3.22
+    container_name: hello-service
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "hello-service started"
+        while true; do
+          echo "hello-service is alive: $(date)"
+          sleep 5
+        done
+    restart: "no"
+
+  config-service:
+    image: alpine:3.22
+    container_name: config-service
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "config-service started"
+        while true; do
+          echo "config-service is alive: $(date)"
+          sleep 5
+        done
+    restart: "no"
+
+  test-service:
+    image: alpine:3.22
+    container_name: test-service
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "test-service started"
+        while true; do
+          echo "test-service is alive: $(date)"
+          sleep 5
+        done
+    restart: "no"
