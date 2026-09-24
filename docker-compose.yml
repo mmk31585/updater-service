@@ -89,6 +89,8 @@ services:
     environment:
       NODE_ID: worker-node
       NODE_ROLE: worker
+      NODE_ADDRESS: worker:8080
+      NODE_VERSION: dev
       APP_NAME: worker-service
       DB_HOST: mariadb
       DB_PORT: "3306"
