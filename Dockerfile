@@ -17,5 +17,7 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=builder /app/entry /app/entry
+COPY --from=builder /app/migrations /app/migrations
+ENV MIGRATIONS_DIR=/app/migrations
 
 CMD ["./entry"]
