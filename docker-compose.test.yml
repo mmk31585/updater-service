@@ -1,0 +1,198 @@
+services:
+  nats:
+    image: nats:2.15-alpine
+    container_name: test-nats
+    ports:
+      - "5422:4222"
+      - "5822:8222"
+    command: ["-js", "-m", "8222"]
+    volumes:
+      - nats_data:/data/jetstream
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:13
+    container_name: test-mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: file_service
+      MYSQL_USER: app
+      MYSQL_PASSWORD: secret
+    ports:
+      - "53306:3306"
+    volumes:
+      - test_mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  data-service:
+    build:
+      context: ./docker/fake-services/data-service
+      dockerfile: Dockerfile
+    container_name: data-service
+    ports:
+      - "8081:8080"
+    environment:
+      CONFIG_PATH: /services/data-service/config.yaml
+    volumes:
+      - ./services:/services:rw
+    depends_on:
+      - nats
+      - mariadb
+    restart: unless-stopped
+
+  test-entry:
+    build:
+      context: ./docker/test-entry
+      dockerfile: Dockerfile
+    image: test-entry:latest
+    container_name: test-entry
+    ports:
+      - "8080:8080"
+    environment:
+      APP_NAME: node-service
+      APP_ENV: development
+      GIN_MODE: debug
+      ELASTIC_ENABLED: "false"
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8080"
+      HTTP_READ_HEADER_TIMEOUT: 300s
+      HTTP_IDLE_TIMEOUT: 600s
+      HTTP_SHUTDOWN_TIMEOUT: 30s
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: file_service
+      DB_USER: app
+      DB_PASSWORD: secret
+      DB_MAX_OPEN_CONNS: "20"
+      DB_MAX_IDLE_CONNS: "10"
+      DB_CONN_MAX_LIFETIME: 30m
+      DB_CONN_MAX_IDLE_TIME: 5m
+      DB_CONNECT_TIMEOUT: 5s
+      NATS_URL: nats://nats:4222
+      NATS_CONNECT_TIMEOUT: 5s
+      NATS_RECONNECT_WAIT: 2s
+      NATS_MAX_RECONNECTS: "-1"
+      NATS_DRAIN_TIMEOUT: 10s
+      NATS_STREAM_NAME: FILE_SERVICE
+      NODE_ID: node-1
+      NODE_ROLE: entry
+      NODE_HEARTBEAT_INTERVAL: 5s
+      NODE_HEARTBEAT_TIMEOUT: 15s
+      FILE_STAGING_DIR: /app/transfers
+      FILE_CHUNK_SIZE: 1MiB
+      FILE_MAX_SIZE: 20GiB
+      FILE_TRANSFER_TIMEOUT: 60m
+      FILE_CHUNK_ACK_TIMEOUT: 10s
+      FILE_TUSD_UPLOAD_DIR: /var/lib/update-entry/uploads
+      FILE_TUSD_MAX_SIZE: 20GiB
+      FILE_TUSD_BASE_PATH: /uploads
+      FILE_TUSD_NOTIFY_TIMEOUT: 10s
+      FILE_DOWNLOAD_CONCURRENCY: "4"
+      FILE_DOWNLOAD_CHUNK_SIZE: 64MiB
+      FILE_DOWNLOAD_MAX_RETRIES: "3"
+      OPERATION_TIMEOUT: 60m
+      COMMAND_ACK_TIMEOUT: 10s
+      PROCESSING_TIMEOUT: 10m
+      INTERNAL_BASE_URL: http://test-entry:8080
+      SERVICES_ROOT: /app/services
+      HEALTH_CHECK_TIMEOUT: 30s
+      HEALTH_REQUEST_TIMEOUT: 5s
+      RETRY_INITIAL_DELAY: 1s
+      RETRY_MAX_DELAY: 4s
+      MAX_HEALTH_RETRIES: 3
+    depends_on:
+      nats:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    volumes:
+      - ./transfers:/app/transfers
+      - ./services:/app/services
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  test-worker:
+    build:
+      context: ./docker/test-worker
+      dockerfile: Dockerfile
+    image: test-worker:latest
+    container_name: test-worker
+    environment:
+      APP_NAME: node-service
+      APP_ENV: development
+      GIN_MODE: debug
+      ELASTIC_ENABLED: "false"
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8080"
+      HTTP_READ_HEADER_TIMEOUT: 300s
+      HTTP_IDLE_TIMEOUT: 600s
+      HTTP_SHUTDOWN_TIMEOUT: 30s
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: file_service
+      DB_USER: app
+      DB_PASSWORD: secret
+      DB_MAX_OPEN_CONNS: "20"
+      DB_MAX_IDLE_CONNS: "10"
+      DB_CONN_MAX_LIFETIME: 30m
+      DB_CONN_MAX_IDLE_TIME: 5m
+      DB_CONNECT_TIMEOUT: 5s
+      NATS_URL: nats://nats:4222
+      NATS_CONNECT_TIMEOUT: 5s
+      NATS_RECONNECT_WAIT: 2s
+      NATS_MAX_RECONNECTS: "-1"
+      NATS_DRAIN_TIMEOUT: 10s
+      NATS_STREAM_NAME: FILE_SERVICE
+      NODE_ID: node-1
+      NODE_ROLE: worker
+      NODE_ADDRESS: test-worker:8080
+      NODE_VERSION: dev
+      NODE_HEARTBEAT_INTERVAL: 5s
+      NODE_HEARTBEAT_TIMEOUT: 15s
+      FILE_STAGING_DIR: /app/transfers
+      FILE_CHUNK_SIZE: 1MiB
+      FILE_MAX_SIZE: 20GiB
+      FILE_TRANSFER_TIMEOUT: 60m
+      FILE_CHUNK_ACK_TIMEOUT: 10s
+      FILE_DOWNLOAD_CONCURRENCY: "4"
+      FILE_DOWNLOAD_CHUNK_SIZE: 64MiB
+      FILE_DOWNLOAD_MAX_RETRIES: "3"
+      OPERATION_TIMEOUT: 60m
+      COMMAND_ACK_TIMEOUT: 10s
+      PROCESSING_TIMEOUT: 10m
+      SERVICES_ROOT: /app/services
+      HEALTH_CHECK_TIMEOUT: 30s
+      HEALTH_REQUEST_TIMEOUT: 5s
+      RETRY_INITIAL_DELAY: 1s
+      RETRY_MAX_DELAY: 4s
+      MAX_HEALTH_RETRIES: 3
+    depends_on:
+      nats:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+    volumes:
+      - ./transfers:/app/transfers
+      - ./services:/app/services
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  nats_data:
+  test_mariadb_data:
+  transfers_data:
+  services_data:
