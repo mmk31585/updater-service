@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/mmk31585/updater-service/internal/config"
@@ -21,7 +22,11 @@ func New(cfg *config.DBConfig) (*sql.DB, error) {
 	db.SetMaxOpenConns(cfg.MaxOpenConns)
 	db.SetMaxIdleConns(cfg.MaxIdleConns)
 	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
-	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+	idle := cfg.ConnMaxIdleTime
+	if idle <= 0 || idle > 30*time.Second {
+		idle = 30 * time.Second
+	}
+	db.SetConnMaxIdleTime(idle)
 
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.ConnectTimeout)
 	defer cancel()
@@ -37,7 +42,19 @@ func Migrate(db *sql.DB, dir string) error {
 	if dir == "" {
 		dir = "./migrations"
 	}
-	return goose.Run("up", db, dir)
+	if err := goose.SetDialect("mysql"); err != nil {
+		return fmt.Errorf("failed to set goose dialect: %w", err)
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= 5; attempt++ {
+		lastErr = goose.RunContext(context.Background(), "up", db, dir)
+		if lastErr == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+	}
+	return fmt.Errorf("failed to run migrations: %w", lastErr)
 }
 
 func buildDSN(cfg *config.DBConfig) string {
@@ -45,7 +62,7 @@ func buildDSN(cfg *config.DBConfig) string {
 	if host == "localhost" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true",
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true&timeout=5s&readTimeout=5s&writeTimeout=5s",
 		cfg.Username,
 		cfg.Password,
 		host,
