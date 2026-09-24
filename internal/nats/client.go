@@ -79,7 +79,9 @@ func (c *Client) Publish(subject string, data []byte) error {
 }
 
 func (c *Client) Flush() error {
-	if err := c.conn.Flush(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.conn.FlushWithContext(ctx); err != nil {
 		c.logger.Error("failed to flush nats", "error", err)
 		return err
 	}
