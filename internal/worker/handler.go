@@ -12,6 +12,8 @@ import (
 	natslib "github.com/nats-io/nats.go"
 )
 
+const backupTimeLayout = "2006-01-02T15-04-05"
+
 func (s *Server) handleCommand(msg *natslib.Msg) {
 	var command message.UpdateCommand
 
@@ -158,11 +160,14 @@ func (s *Server) executeUpdate(
 	opLogger := s.cfg.Logger.With("operation_id", command.OperationID)
 
 	backupPath := filepath.Join(
-		"./var/lib/update-worker",
+		s.cfg.StorageRoot,
 		"backups",
-		command.OperationID,
 		command.Service,
-		command.FileName,
+		fmt.Sprintf(
+			"%s.%s",
+			filepath.Base(service.ConfigPath),
+			time.Now().Format(backupTimeLayout),
+		),
 	)
 
 	opLogger.Info("starting backup")
@@ -171,20 +176,29 @@ func (s *Server) executeUpdate(
 		return "", fmt.Errorf("failed to advance to BACKUP_CREATED")
 	}
 
-	if err := s.cfg.FileDeployer.Backup(
+	created, err := s.cfg.FileDeployer.Backup(
 		service.ConfigPath,
 		backupPath,
-	); err != nil {
+	)
+	if err != nil {
 		return "", fmt.Errorf(
 			"backup failed: %w",
 			err,
 		)
 	}
 
-	opLogger.Info(
-		"backup created",
-		"backup", backupPath,
-	)
+	if !created {
+		backupPath = ""
+		opLogger.Info(
+			"no existing config to back up, proceeding",
+			"target", service.ConfigPath,
+		)
+	} else {
+		opLogger.Info(
+			"backup created",
+			"backup", backupPath,
+		)
+	}
 
 	if !s.advanceStatus(ctx, command.OperationID, operation.StatusApplying) {
 		return backupPath, fmt.Errorf("failed to advance to APPLYING")

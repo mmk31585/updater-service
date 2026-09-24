@@ -34,7 +34,7 @@ type HealthChecker interface {
 }
 
 type FileDeployer interface {
-	Backup(target string, backup string) error
+	Backup(target string, backup string) (bool, error)
 	Apply(staged string, target string) error
 	Rollback(backup string, target string) error
 }

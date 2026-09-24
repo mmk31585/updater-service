@@ -131,18 +131,22 @@ func (f *fakeHealthChecker) WaitUntilHealthy(_ context.Context, url string) erro
 }
 
 type fakeFileDeployer struct {
-	backupErr   error
-	applyErr    error
-	rollbackErr error
+	backupMissing bool
+	backupErr     error
+	applyErr      error
+	rollbackErr   error
 
 	backups   [][2]string
 	applies   [][2]string
 	rollbacks [][2]string
 }
 
-func (f *fakeFileDeployer) Backup(target, backup string) error {
+func (f *fakeFileDeployer) Backup(target, backup string) (bool, error) {
 	f.backups = append(f.backups, [2]string{target, backup})
-	return f.backupErr
+	if f.backupErr != nil {
+		return false, f.backupErr
+	}
+	return !f.backupMissing, nil
 }
 
 func (f *fakeFileDeployer) Apply(staged, target string) error {
@@ -252,6 +256,28 @@ func TestExecuteUpdate(t *testing.T) {
 		}
 		if backupPath != "" {
 			t.Errorf("backupPath = %q, want empty", backupPath)
+		}
+	})
+
+	t.Run("missing target skips backup and proceeds", func(t *testing.T) {
+		downloader, dockerRunner, checker, deployer := newFakes()
+		deployer.backupMissing = true
+		opRepo := newMemoryOperationRepository(operation.Operation{ID: "op-1"})
+		server := New(Config{
+			Logger: workerTestLogger(), OpRepo: opRepo,
+			Downloader: downloader, DockerRunner: dockerRunner,
+			HealthChecker: checker, FileDeployer: deployer,
+		})
+
+		backupPath, err := server.executeUpdate(context.Background(), command, "/staging/config.yaml")
+		if err != nil {
+			t.Fatalf("executeUpdate() error = %v", err)
+		}
+		if backupPath != "" {
+			t.Errorf("backupPath = %q, want empty when nothing was backed up", backupPath)
+		}
+		if len(deployer.applies) != 1 {
+			t.Errorf("expected one apply, got %d", len(deployer.applies))
 		}
 	})
 
