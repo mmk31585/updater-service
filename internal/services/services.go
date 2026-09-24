@@ -29,7 +29,7 @@ func NewServiceDefinition(root, service string) (ServiceDefinition, bool) {
 		},
 		"data-service": {
 			Container:  "data-service",
-			ConfigPath: filepath.Join(root, "data-service", "config"),
+			ConfigPath: filepath.Join(root, "data-service", "config.yaml"),
 			HealthURL:  "http://data-service:8080/health",
 		},
 	}
