@@ -44,7 +44,7 @@ func TestNewServiceDefinition(t *testing.T) {
 			service:        "data-service",
 			wantOK:         true,
 			wantContainer:  "data-service",
-			wantConfigPath: filepath.Join(root, "data-service", "config.yaml"),
+			wantConfigPath: filepath.Join(root, "data-service", "config", "config.yaml"),
 			wantHealthURL:  "http://data-service:8080/health",
 		},
 		{
