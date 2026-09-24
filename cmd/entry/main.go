@@ -89,13 +89,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		ctx, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-
-		if err := client.EnsureIndex(ctx); err != nil {
+		if err := waitForElasticsearch(client, logger); err != nil {
 			logger.Error(
 				"failed to ensure Elasticsearch index",
 				"error", err,
@@ -165,4 +159,25 @@ func main() {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+func waitForElasticsearch(client *search.Client, logger *slog.Logger) error {
+	var lastErr error
+	for attempt := 1; attempt <= 15; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		lastErr = client.EnsureIndex(ctx)
+		cancel()
+
+		if lastErr == nil {
+			return nil
+		}
+
+		logger.Warn(
+			"elasticsearch not ready",
+			"attempt", attempt,
+			"error", lastErr,
+		)
+		time.Sleep(2 * time.Second)
+	}
+	return lastErr
 }
