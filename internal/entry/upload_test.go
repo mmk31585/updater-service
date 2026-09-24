@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mmk31585/updater-service/internal/hash"
 	"github.com/mmk31585/updater-service/internal/message"
 	"github.com/mmk31585/updater-service/internal/nats"
 	"github.com/mmk31585/updater-service/internal/node"
@@ -282,16 +283,16 @@ func TestCalculateFileSHA256(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	got, err := calculateFileSHA256(filePath)
+	got, err := hash.SHA256(filePath)
 	if err != nil {
-		t.Fatalf("calculateFileSHA256() error = %v", err)
+		t.Fatalf("hash.SHA256() error = %v", err)
 	}
 	const want = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
 	if got != want {
 		t.Errorf("hash = %q, want %q", got, want)
 	}
 
-	if _, err := calculateFileSHA256(filepath.Join(dir, "missing")); err == nil {
+	if _, err := hash.SHA256(filepath.Join(dir, "missing")); err == nil {
 		t.Fatal("expected error for missing file, got nil")
 	}
 }

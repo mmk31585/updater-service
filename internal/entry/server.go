@@ -2,12 +2,9 @@ package entry
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +19,7 @@ import (
 	"github.com/tus/tusd/v2/pkg/filestore"
 	"github.com/tus/tusd/v2/pkg/handler"
 
+	"github.com/mmk31585/updater-service/internal/hash"
 	"github.com/mmk31585/updater-service/internal/operation"
 	"github.com/mmk31585/updater-service/internal/subjects"
 )
@@ -42,7 +40,7 @@ func internalBaseURL() string {
 }
 
 type Server struct {
-	cfg Config
+	cfg         Config
 	tusdOnce    sync.Once
 	tusdHandler *handler.Handler
 	tusdErr     error
@@ -97,9 +95,9 @@ func (s *Server) newTusdHandler() (*handler.Handler, error) {
 	}
 
 	h, err := handler.NewHandler(handler.Config{
-		BasePath:      s.tusdBasePath(),
-		StoreComposer: composer,
-		MaxSize:       maxSize,
+		BasePath:        s.tusdBasePath(),
+		StoreComposer:   composer,
+		MaxSize:         maxSize,
 		DisableDownload: true,
 		PreUploadCreateCallback: func(hook handler.HookEvent) (handler.HTTPResponse, handler.FileInfoChanges, error) {
 			return s.onTusdUploadCreate(hook)
@@ -150,7 +148,7 @@ func (s *Server) onTusdUploadFinish(hook handler.HookEvent) (handler.HTTPRespons
 		return handler.HTTPResponse{}, fmt.Errorf("missing operation_id or storage path on upload completion")
 	}
 
-	sum, err := calculateFileSHA256(filePath)
+	sum, err := hash.SHA256(filePath)
 	if err != nil {
 		return handler.HTTPResponse{}, fmt.Errorf("calculate sha256: %w", err)
 	}
@@ -207,20 +205,6 @@ func (s *Server) onTusdUploadFinish(hook handler.HookEvent) (handler.HTTPRespons
 		},
 		Body: string(body),
 	}, nil
-}
-
-func calculateFileSHA256(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (s *Server) Run(ctx context.Context) error {

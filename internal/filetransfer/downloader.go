@@ -2,8 +2,6 @@ package filetransfer
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mmk31585/updater-service/internal/hash"
 	"github.com/mmk31585/updater-service/internal/logging"
 )
 
@@ -433,7 +432,7 @@ func (d *Downloader) verifyAndFinalize(
 		_ = fileInfo
 	}
 
-	sum, err := calculateFileSHA256(partPath)
+	sum, err := hash.SHA256(partPath)
 	if err != nil {
 		return fmt.Errorf("failed to calculate SHA256: %w", err)
 	}
@@ -526,18 +525,4 @@ type Chunk struct {
 	CompletedAt string `json:"completed_at,omitempty"`
 	Retries     int    `json:"retries"`
 	Error       string `json:"error,omitempty"`
-}
-
-func calculateFileSHA256(filePath string) (string, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
