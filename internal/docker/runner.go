@@ -26,7 +26,7 @@ func NewRunner(servicesRoot string) *Runner {
 	return r
 }
 
-func (r *Runner) Restart(ctx context.Context,service string,) error {
+func (r *Runner) Restart(ctx context.Context, service string) error {
 	definition, ok := r.services[service]
 	if !ok {
 		return fmt.Errorf(
@@ -56,7 +56,7 @@ func (r *Runner) Restart(ctx context.Context,service string,) error {
 
 	return nil
 }
-func (r *Runner) HealthURL(service string,) (string, bool) {
+func (r *Runner) HealthURL(service string) (string, bool) {
 	definition, ok := r.services[service]
 
 	if !ok {
@@ -66,7 +66,7 @@ func (r *Runner) HealthURL(service string,) (string, bool) {
 	return definition.HealthURL, true
 }
 
-func (r *Runner) Service(service string,) (services.ServiceDefinition, bool) {
+func (r *Runner) Service(service string) (services.ServiceDefinition, bool) {
 	definition, ok := r.services[service]
 	if !ok {
 		return services.ServiceDefinition{}, false
