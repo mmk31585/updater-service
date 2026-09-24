@@ -1,0 +1,57 @@
+services:
+  nats:
+    image: nats:2.15-alpine
+    container_name: update-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["-js", "-m", "8222"]
+    volumes:
+      - nats_data:/data/jetstream
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  mariadb:
+    image: mariadb:13
+    container_name: update-mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: file_service
+      MYSQL_USER: app
+      MYSQL_PASSWORD: secret
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  data-service:
+    build:
+      context: ./docker/fake-services/data-service
+      dockerfile: Dockerfile
+    container_name: data-service
+    ports:
+      - "8081:8080"
+    environment:
+      CONFIG_PATH: /app/config
+    volumes:
+      - ./docker/fake-services/data-service:/app:ro
+    depends_on:
+      - nats
+      - mariadb
+    restart: unless-stopped
+
+volumes:
+  nats_data:
+  mariadb_data:

@@ -16,5 +16,97 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  mariadb:
+    image: mariadb:13
+    container_name: update-mariadb
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: file_service
+      MYSQL_USER: app
+      MYSQL_PASSWORD: secret
+    ports:
+      - "3306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
+    container_name: update-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+  entry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: update-entry
+    command: ["./entry"]
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ID: entry-node
+      NODE_ROLE: entry
+      APP_NAME: entry-service
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: file_service
+      DB_USER: app
+      DB_PASSWORD: secret
+      NATS_URL: nats://nats:4222
+      SERVICES_ROOT: /app/services
+      ELASTIC_URL: http://elasticsearch:9200
+    env_file: .env
+    depends_on:
+      nats:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: update-worker
+    command: ["./worker"]
+    environment:
+      NODE_ID: worker-node
+      NODE_ROLE: worker
+      NODE_ADDRESS: worker:8080
+      NODE_VERSION: dev
+      APP_NAME: worker-service
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: file_service
+      DB_USER: app
+      DB_PASSWORD: secret
+      NATS_URL: nats://nats:4222
+      SERVICES_ROOT: /app/services
+    env_file: .env
+    depends_on:
+      nats:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+
 volumes:
   nats_data:
+  mariadb_data:
+  es_data:
