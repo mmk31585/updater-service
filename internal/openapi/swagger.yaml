@@ -2,6 +2,9 @@ basePath: /
 definitions:
   entry.CreateUpdateRequest:
     properties:
+      node_id:
+        example: worker-node
+        type: string
       service:
         enum:
         - hello-service
@@ -200,10 +203,10 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a new pending update operation for a service and returns
-        a unique
+      description: Creates a new pending update operation for a service on a worker
+        node and
       parameters:
-      - description: Service to update
+      - description: Service and target node
         in: body
         name: request
         required: true
@@ -217,7 +220,15 @@ paths:
           schema:
             $ref: '#/definitions/entry.CreateUpdateResponse'
         "400":
-          description: invalid request body or missing service
+          description: invalid request body or missing service/node_id
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "404":
+          description: node not found
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "409":
+          description: node is not online
           schema:
             $ref: '#/definitions/entry.ErrorResponse'
         "500":
@@ -251,53 +262,105 @@ paths:
       summary: Get update operation status
       tags:
       - Operations
-  /updates/{id}/file:
-    put:
+  /uploads:
+    post:
       consumes:
-      - multipart/form-data
-      description: Uploads the update file for a pending operation. Send it either
-        as
+      - application/offset+octet-stream
+      description: |-
+        Creates a new tus upload session for an update operation.
+        The operation must already exist and be in the PENDING state.
+        The Upload-Metadata header must contain the base64-encoded operation_id and filename values.
       parameters:
-      - description: Operation ID
-        in: path
-        name: id
+      - default: 1.0.0
+        description: Tus protocol version
+        in: header
+        name: Tus-Resumable
         required: true
         type: string
-      - description: Update file to upload
-        in: formData
-        name: file
+      - description: Total upload size in bytes
+        in: header
+        name: Upload-Length
         required: true
-        type: file
+        type: integer
+      - description: 'Base64-encoded metadata: operation_id and filename'
+        in: header
+        name: Upload-Metadata
+        required: true
+        type: string
       produces:
       - application/json
       responses:
-        "202":
-          description: Accepted
+        "201":
+          description: Upload created
+          headers:
+            Location:
+              description: URL of the created upload resource
+              type: string
           schema:
-            $ref: '#/definitions/entry.FileUploadResponse'
+            type: string
         "400":
-          description: missing file field or body too large
+          description: missing or invalid headers, or operation is not pending
           schema:
             $ref: '#/definitions/entry.ErrorResponse'
         "404":
           description: operation not found
           schema:
             $ref: '#/definitions/entry.ErrorResponse'
-        "409":
-          description: operation is not pending
-          schema:
-            $ref: '#/definitions/entry.ErrorResponse'
-        "500":
-          description: storage or metadata failure
-          schema:
-            $ref: '#/definitions/entry.ErrorResponse'
-        "503":
-          description: failed to dispatch the operation
-          schema:
-            $ref: '#/definitions/entry.ErrorResponse'
-      summary: Upload an update file
+      summary: Create a tus resumable upload
       tags:
-      - Files
+      - Uploads
+  /uploads/{id}:
+    patch:
+      consumes:
+      - application/offset+octet-stream
+      description: |-
+        Appends a chunk of bytes at Upload-Offset.
+        When the upload is complete the server computes the file SHA256, stores the file metadata and dispatches the operation to the target worker node.
+      parameters:
+      - description: Upload ID returned in the Location header of POST /uploads
+        in: path
+        name: id
+        required: true
+        type: string
+      - default: 1.0.0
+        description: Tus protocol version
+        in: header
+        name: Tus-Resumable
+        required: true
+        type: string
+      - description: Byte offset of this chunk within the upload
+        in: header
+        name: Upload-Offset
+        required: true
+        type: integer
+      - description: Raw chunk bytes
+        in: body
+        name: body
+        required: true
+        schema:
+          type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Final chunk accepted; file metadata returned
+          schema:
+            $ref: '#/definitions/entry.FileUploadResponse'
+        "204":
+          description: Chunk accepted, upload not yet complete
+          schema:
+            type: string
+        "400":
+          description: invalid content type, offset or checksum
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+        "404":
+          description: upload not found
+          schema:
+            $ref: '#/definitions/entry.ErrorResponse'
+      summary: Append a chunk to a tus upload
+      tags:
+      - Uploads
 schemes:
 - http
 swagger: "2.0"

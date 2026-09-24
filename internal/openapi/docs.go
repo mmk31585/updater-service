@@ -153,7 +153,7 @@ const docTemplate = `{
         },
         "/updates": {
             "post": {
-                "description": "Creates a new pending update operation for a service and returns a unique",
+                "description": "Creates a new pending update operation for a service on a worker node and",
                 "consumes": [
                     "application/json"
                 ],
@@ -166,7 +166,7 @@ const docTemplate = `{
                 "summary": "Create an update operation",
                 "parameters": [
                     {
-                        "description": "Service to update",
+                        "description": "Service and target node",
                         "name": "request",
                         "in": "body",
                         "required": true,
@@ -183,7 +183,19 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "invalid request body or missing service",
+                        "description": "invalid request body or missing service/node_id",
+                        "schema": {
+                            "$ref": "#/definitions/entry.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "node not found",
+                        "schema": {
+                            "$ref": "#/definitions/entry.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "node is not online",
                         "schema": {
                             "$ref": "#/definitions/entry.ErrorResponse"
                         }
@@ -232,44 +244,58 @@ const docTemplate = `{
                 }
             }
         },
-        "/updates/{id}/file": {
-            "put": {
-                "description": "Uploads the update file for a pending operation. Send it either as",
+        "/uploads": {
+            "post": {
+                "description": "Creates a new tus upload session for an update operation.\nThe operation must already exist and be in the PENDING state.\nThe Upload-Metadata header must contain the base64-encoded operation_id and filename values.",
                 "consumes": [
-                    "multipart/form-data"
+                    "application/offset+octet-stream"
                 ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Files"
+                    "Uploads"
                 ],
-                "summary": "Upload an update file",
+                "summary": "Create a tus resumable upload",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Operation ID",
-                        "name": "id",
-                        "in": "path",
+                        "default": "1.0.0",
+                        "description": "Tus protocol version",
+                        "name": "Tus-Resumable",
+                        "in": "header",
                         "required": true
                     },
                     {
-                        "type": "file",
-                        "description": "Update file to upload",
-                        "name": "file",
-                        "in": "formData",
+                        "type": "integer",
+                        "description": "Total upload size in bytes",
+                        "name": "Upload-Length",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Base64-encoded metadata: operation_id and filename",
+                        "name": "Upload-Metadata",
+                        "in": "header",
                         "required": true
                     }
                 ],
                 "responses": {
-                    "202": {
-                        "description": "Accepted",
+                    "201": {
+                        "description": "Upload created",
                         "schema": {
-                            "$ref": "#/definitions/entry.FileUploadResponse"
+                            "type": "string"
+                        },
+                        "headers": {
+                            "Location": {
+                                "type": "string",
+                                "description": "URL of the created upload resource"
+                            }
                         }
                     },
                     "400": {
-                        "description": "missing file field or body too large",
+                        "description": "missing or invalid headers, or operation is not pending",
                         "schema": {
                             "$ref": "#/definitions/entry.ErrorResponse"
                         }
@@ -279,21 +305,77 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/entry.ErrorResponse"
                         }
+                    }
+                }
+            }
+        },
+        "/uploads/{id}": {
+            "patch": {
+                "description": "Appends a chunk of bytes at Upload-Offset.\nWhen the upload is complete the server computes the file SHA256, stores the file metadata and dispatches the operation to the target worker node.",
+                "consumes": [
+                    "application/offset+octet-stream"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Uploads"
+                ],
+                "summary": "Append a chunk to a tus upload",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Upload ID returned in the Location header of POST /uploads",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
                     },
-                    "409": {
-                        "description": "operation is not pending",
+                    {
+                        "type": "string",
+                        "default": "1.0.0",
+                        "description": "Tus protocol version",
+                        "name": "Tus-Resumable",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Byte offset of this chunk within the upload",
+                        "name": "Upload-Offset",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "description": "Raw chunk bytes",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Final chunk accepted; file metadata returned",
+                        "schema": {
+                            "$ref": "#/definitions/entry.FileUploadResponse"
+                        }
+                    },
+                    "204": {
+                        "description": "Chunk accepted, upload not yet complete",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "invalid content type, offset or checksum",
                         "schema": {
                             "$ref": "#/definitions/entry.ErrorResponse"
                         }
                     },
-                    "500": {
-                        "description": "storage or metadata failure",
-                        "schema": {
-                            "$ref": "#/definitions/entry.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "failed to dispatch the operation",
+                    "404": {
+                        "description": "upload not found",
                         "schema": {
                             "$ref": "#/definitions/entry.ErrorResponse"
                         }
@@ -306,6 +388,10 @@ const docTemplate = `{
         "entry.CreateUpdateRequest": {
             "type": "object",
             "properties": {
+                "node_id": {
+                    "type": "string",
+                    "example": "worker-node"
+                },
                 "service": {
                     "type": "string",
                     "enum": [
