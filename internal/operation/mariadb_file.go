@@ -21,9 +21,10 @@ func (r *MariaDBFileRepository) Create(ctx context.Context, meta FileMetadata) e
 			file_path,
 			file_size,
 			sha256,
-			created_at
+			created_at,
+			status
 		)
-		VALUES (?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`
 	_, err := r.db.ExecContext(
 		ctx,
@@ -34,6 +35,7 @@ func (r *MariaDBFileRepository) Create(ctx context.Context, meta FileMetadata) e
 		meta.FileSize,
 		meta.SHA256,
 		meta.CreatedAt,
+		meta.Status,
 	)
 	return err
 }
@@ -46,7 +48,8 @@ func (r *MariaDBFileRepository) Get(ctx context.Context, operationID string) (Fi
 			file_path,
 			file_size,
 			sha256,
-			created_at
+			created_at,
+			status
 		FROM operation_files
 		WHERE operation_id = ?
 	`
@@ -58,6 +61,7 @@ func (r *MariaDBFileRepository) Get(ctx context.Context, operationID string) (Fi
 		&meta.FileSize,
 		&meta.SHA256,
 		&meta.CreatedAt,
+		&meta.Status,
 	)
 	if err != nil {
 		return FileMetadata{}, err
