@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -13,13 +15,13 @@ import (
 	"github.com/mmk31585/updater-service/internal/entry"
 	"github.com/mmk31585/updater-service/internal/logging"
 	"github.com/mmk31585/updater-service/internal/nats"
+	"github.com/mmk31585/updater-service/internal/node"
 
 	// Registers the generated OpenAPI/Swagger specification so the
 	// /swagger endpoints can serve the API documentation.
 	_ "github.com/mmk31585/updater-service/internal/openapi"
 	"github.com/mmk31585/updater-service/internal/operation"
 	"github.com/mmk31585/updater-service/internal/search"
-	natslib "github.com/nats-io/nats.go"
 )
 
 // Updater Service API
@@ -37,6 +39,9 @@ import (
 //	@schemes		http
 func main() {
 	cnf, err := config.LoadConfig()
+	if err == nil {
+		err = cnf.Validate()
+	}
 	if err != nil {
 		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("failed to load config", "error", err)
 		os.Exit(1)
@@ -46,7 +51,13 @@ func main() {
 
 	logger := logging.NewLogger(cnf.App.AppName, cnf.App.AppEnv, cnf.Node.ID)
 
-	nc, err := nats.New(nats.Config{URL: natslib.DefaultURL}, logger)
+	nc, err := nats.New(nats.Config{
+		URL:             cnf.Nats.URL,
+		ConnectTimeout:  cnf.Nats.ConnectTimeout,
+		ReconnectPeriod: cnf.Nats.ReconnectPeriod,
+		MaxReconnect:    cnf.Nats.MaxReconnect,
+		DrainTimeout:    cnf.Nats.DrainTimeout,
+	}, logger)
 	if err != nil {
 		logger.Error("failed to connect to NATS", "error", err)
 		os.Exit(1)
@@ -102,32 +113,54 @@ func main() {
 		)
 	}
 
+	nodeRepo := node.NewMariaDBNodeRepository(db)
 	srv := entry.New(entry.Config{
-		Logger:          logger,
-		NATS:            nc,
-		OpRepo:          operation.NewMariaDBRepository(db),
-		FileRepo:        operation.NewMariaDBFileRepository(db),
-		StorageRoot:     cnf.Services.ServicesRoot,
-		NodeID:          cnf.Node.ID,
-		Addr:            ":8080",
-		ReadTimeout:     cnf.HTTP.ReadTimeout,
-		ShutdownTimeout: cnf.HTTP.ShutdownTimeout,
-		SearchClient:    searchClient,
-		MaxUploadSize:   config.ParseSize(cnf.File.MaxSize),
+		Logger:               logger,
+		NATS:                 nc,
+		OpRepo:               operation.NewMariaDBRepository(db),
+		FileRepo:             operation.NewMariaDBFileRepository(db),
+		NodeRepo:             nodeRepo,
+		StorageRoot:          cnf.Services.ServicesRoot,
+		NodeID:               cnf.Node.ID,
+		Addr:                 ":" + cnf.HTTP.Port,
+		ReadTimeout:          cnf.HTTP.ReadTimeout,
+		ShutdownTimeout:      cnf.HTTP.ShutdownTimeout,
+		NodeHeartbeatTimeout: cnf.Node.HeartbeatTimeout,
+		SearchClient:         searchClient,
+		MaxUploadSize:        config.ParseSize(cnf.File.MaxSize),
+		TusdUploadDir:        cnf.File.TusdUploadDir,
+		TusdMaxSize:          config.ParseSize(cnf.File.TusdMaxSize),
+		TusdBasePath:         cnf.File.TusdBasePath,
+		TusdNotifyTimeout:    cnf.File.TusdNotifyTimeout,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		logger.Error("database not reachable", "error", err)
 		os.Exit(1)
 	}
 
 	logger.Info("database connected")
-	logger.Info("entry starting", "addr", ":8080")
 
-	if err := srv.Run(context.Background()); err != nil {
+	runCtx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	go entry.RunNodeMonitor(
+		runCtx,
+		nodeRepo,
+		cnf.Node.HeartbeatInterval,
+		logger,
+	)
+
+	logger.Info("entry starting", "addr", ":"+cnf.HTTP.Port)
+
+	if err := srv.Run(runCtx); err != nil {
 		logger.Error("server failed", "error", err)
 		os.Exit(1)
 	}
