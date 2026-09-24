@@ -19,6 +19,15 @@ func (s *Server) handleCommand(msg *natslib.Msg) {
 		s.cfg.Logger.Error("failed to decode command", "error", err)
 		return
 	}
+	if command.NodeInstance != "" && s.cfg.Heartbeat != nil &&
+		command.NodeInstance != s.cfg.Heartbeat.InstanceID {
+		s.cfg.Logger.Error(
+			"rejecting command for stale node instance",
+			"operation_id", command.OperationID,
+			"node_instance", command.NodeInstance,
+		)
+		return
+	}
 
 	opLogger := s.cfg.Logger.With(
 		"operation_id", command.OperationID,
@@ -89,7 +98,10 @@ func (s *Server) handleCommand(msg *natslib.Msg) {
 	backupPath, err := s.executeUpdate(ctx, command, dest)
 	if err != nil {
 		opLogger.Error("update failed", "error", err)
-		s.rollbackOperation(ctx, command, backupPath)
+		if backupPath != "" {
+			s.rollbackOperation(ctx, command, backupPath, err)
+			return
+		}
 		s.handleExecutionFailure(command.OperationID, err)
 		return
 	}
@@ -170,14 +182,14 @@ func (s *Server) executeUpdate(
 	)
 
 	if !s.advanceStatus(ctx, command.OperationID, operation.StatusApplying) {
-		return "", fmt.Errorf("failed to advance to APPLYING")
+		return backupPath, fmt.Errorf("failed to advance to APPLYING")
 	}
 
 	if err := s.cfg.FileDeployer.Apply(
 		stagedPath,
 		service.ConfigPath,
 	); err != nil {
-		return "", fmt.Errorf(
+		return backupPath, fmt.Errorf(
 			"apply failed: %w",
 			err,
 		)
@@ -195,25 +207,25 @@ func (s *Server) executeUpdate(
 		restartCtx,
 		command.Service,
 	); err != nil {
-		return "", fmt.Errorf(
+		return backupPath, fmt.Errorf(
 			"restart failed: %w",
 			err,
 		)
 	}
 
 	if !s.advanceStatus(ctx, command.OperationID, operation.StatusHealthChecking) {
-		return "", fmt.Errorf("failed to advance to HEALTH_CHECKING")
+		return backupPath, fmt.Errorf("failed to advance to HEALTH_CHECKING")
 	}
 
 	if service.HealthURL == "" {
-		return "", fmt.Errorf("health URL not configured for service %q", command.Service)
+		return backupPath, fmt.Errorf("health URL not configured for service %q", command.Service)
 	}
 
 	if err := s.cfg.HealthChecker.WaitUntilHealthy(
 		ctx,
 		service.HealthURL,
 	); err != nil {
-		return "", fmt.Errorf(
+		return backupPath, fmt.Errorf(
 			"new version health check failed: %w",
 			err,
 		)
@@ -226,17 +238,18 @@ func (s *Server) rollbackOperation(
 	ctx context.Context,
 	command message.UpdateCommand,
 	backupPath string,
+	cause error,
 ) {
 	opLogger := s.cfg.Logger.With("operation_id", command.OperationID)
 
-	opLogger.Warn("starting rollback", "service", command.Service)
+	opLogger.Warn("starting rollback", "service", command.Service, "cause", cause)
 
 	s.advanceStatus(ctx, command.OperationID, operation.StatusFailed)
 
 	_ = s.publishResult(
 		command.OperationID,
 		operation.StatusFailed,
-		"new version failed health check",
+		cause.Error(),
 	)
 
 	if !s.advanceStatus(ctx, command.OperationID, operation.StatusRollingBack) {
