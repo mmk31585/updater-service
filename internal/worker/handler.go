@@ -165,8 +165,8 @@ func (s *Server) executeUpdate(
 		command.Service,
 		fmt.Sprintf(
 			"%s.%s",
-			filepath.Base(service.ConfigPath),
 			time.Now().Format(backupTimeLayout),
+			filepath.Base(service.ConfigPath),
 		),
 	)
 

@@ -38,15 +38,15 @@ services:
 
   data-service:
     build:
-      context: ./docker/fake-services/data-service
+      context: ./data-service
       dockerfile: Dockerfile
     container_name: data-service
     ports:
       - "8081:8080"
     environment:
-      CONFIG_PATH: /app/config
+      CONFIG_PATH: /app/config/config.yaml
     volumes:
-      - ./docker/fake-services/data-service:/app:ro
+      - ./data-service:/app:ro
     depends_on:
       - nats
       - mariadb

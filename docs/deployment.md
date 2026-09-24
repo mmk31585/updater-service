@@ -93,6 +93,8 @@ Configuration is environment-driven (loaded from `.env` via `godotenv` plus comp
 | ES | `ELASTIC_ENABLED`, `ELASTIC_URL`, index/bulk settings | Search (can be disabled) |
 | Services | `SERVICES_ROOT` | Root of managed config files |
 
+> Health URLs default to the Docker service name (e.g. `http://data-service:8080/health`). Override per service with `HEALTH_URL_<SERVICE>` (uppercased, `-` → `_`), e.g. `HEALTH_URL_DATA_SERVICE=http://localhost:8081/health` when the worker runs outside Docker.
+
 ### Environment values that must differ per service
 
 | Variable | entry | worker |
