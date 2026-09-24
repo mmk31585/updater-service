@@ -60,6 +60,8 @@ type NatsConfig struct {
 type NodeConfig struct {
 	ID                string
 	Role              string
+	Address           string
+	Version           string
 	IncarnationID     string
 	HeartbeatInterval time.Duration
 	HeartbeatTimeout  time.Duration
@@ -70,6 +72,15 @@ type FileConfig struct {
 	MaxSize         string
 	TransferTimeout time.Duration
 	ChunkAckTimeout time.Duration
+
+	TusdUploadDir     string        `mapstructure:"tusd_upload_dir"`
+	TusdMaxSize       string        `mapstructure:"tusd_max_size"`
+	TusdBasePath      string        `mapstructure:"tusd_base_path"`
+	TusdNotifyTimeout time.Duration `mapstructure:"tusd_notify_timeout"`
+
+	DownloadConcurrency int    `mapstructure:"download_concurrency"`
+	DownloadChunkSize   string `mapstructure:"download_chunk_size"`
+	DownloadMaxRetries  int    `mapstructure:"download_max_retries"`
 }
 type OperationConfig struct {
 	OperationTimeout     time.Duration
@@ -145,17 +156,26 @@ func LoadConfig() (*ApplicationConfig, error) {
 	NodeConf := NodeConfig{
 		ID:                GetString("NODE_ID", "node-1"),
 		Role:              GetString("NODE_ROLE", "entry"),
+		Address:           GetString("NODE_ADDRESS", ""),
+		Version:           GetString("NODE_VERSION", "dev"),
 		IncarnationID:     GetString("NODE_INCARNATION_ID", generateIncarnationID()),
 		HeartbeatInterval: GetDuration("NODE_HEARTBEAT_INTERVAL", 5*time.Second),
 		HeartbeatTimeout:  GetDuration("NODE_HEARTBEAT_TIMEOUT", 15*time.Second),
 	}
 
 	FileConf := FileConfig{
-		Path:            GetString("FILE_STAGING_DIR", "/tmp/transfers"),
-		ChunkSize:       GetString("FILE_CHUNK_SIZE", "1MiB"),
-		MaxSize:         GetString("FILE_MAX_SIZE", "1GiB"),
-		TransferTimeout: GetDuration("FILE_TRANSFER_TIMEOUT", 30*time.Minute),
-		ChunkAckTimeout: GetDuration("FILE_CHUNK_ACK_TIMEOUT", 10*time.Second),
+		Path:                GetString("FILE_STAGING_DIR", "/tmp/transfers"),
+		ChunkSize:           GetString("FILE_CHUNK_SIZE", "1MiB"),
+		MaxSize:             GetString("FILE_MAX_SIZE", "1GiB"),
+		TransferTimeout:     GetDuration("FILE_TRANSFER_TIMEOUT", 30*time.Minute),
+		ChunkAckTimeout:     GetDuration("FILE_CHUNK_ACK_TIMEOUT", 10*time.Second),
+		TusdUploadDir:       GetString("FILE_TUSD_UPLOAD_DIR", "/var/lib/update-entry/uploads"),
+		TusdMaxSize:         GetString("FILE_TUSD_MAX_SIZE", "20GiB"),
+		TusdBasePath:        GetString("FILE_TUSD_BASE_PATH", "/uploads"),
+		TusdNotifyTimeout:   GetDuration("FILE_TUSD_NOTIFY_TIMEOUT", 10*time.Second),
+		DownloadConcurrency: GetInt("FILE_DOWNLOAD_CONCURRENCY", 4),
+		DownloadChunkSize:   GetString("FILE_DOWNLOAD_CHUNK_SIZE", "64MiB"),
+		DownloadMaxRetries:  GetInt("FILE_DOWNLOAD_MAX_RETRIES", 3),
 	}
 
 	OperationConf := OperationConfig{
@@ -205,6 +225,12 @@ func (c *ApplicationConfig) Validate() error {
 	}
 	if c.Node.Role == "" {
 		return fmt.Errorf("NODE_ROLE is required")
+	}
+	if c.Node.HeartbeatInterval <= 0 {
+		return fmt.Errorf("NODE_HEARTBEAT_INTERVAL must be positive")
+	}
+	if c.Node.HeartbeatTimeout <= c.Node.HeartbeatInterval {
+		return fmt.Errorf("NODE_HEARTBEAT_TIMEOUT must be greater than NODE_HEARTBEAT_INTERVAL")
 	}
 	if c.Nats.URL == "" {
 		return fmt.Errorf("NATS_URL is required")
