@@ -5,32 +5,61 @@ import (
 	"log/slog"
 
 	"github.com/mmk31585/updater-service/internal/config"
-	"github.com/mmk31585/updater-service/internal/docker"
-	"github.com/mmk31585/updater-service/internal/fileops"
-	"github.com/mmk31585/updater-service/internal/filetransfer"
-	"github.com/mmk31585/updater-service/internal/healthcheck"
+	"github.com/mmk31585/updater-service/internal/heartbeat"
 	"github.com/mmk31585/updater-service/internal/nats"
 	"github.com/mmk31585/updater-service/internal/operation"
 	"github.com/mmk31585/updater-service/internal/search"
+	"github.com/mmk31585/updater-service/internal/services"
+	"github.com/mmk31585/updater-service/internal/subjects"
 	natslib "github.com/nats-io/nats.go"
 )
 
+type Downloader interface {
+	Download(
+		ctx context.Context,
+		url string,
+		dest string,
+		expectedSize int64,
+		expectedSHA256 string,
+	) error
+}
+
+type DockerRunner interface {
+	Service(service string) (services.ServiceDefinition, bool)
+	Restart(ctx context.Context, service string) error
+}
+
+type HealthChecker interface {
+	WaitUntilHealthy(ctx context.Context, url string) error
+}
+
+type FileDeployer interface {
+	Backup(target string, backup string) error
+	Apply(staged string, target string) error
+	Rollback(backup string, target string) error
+}
+
 const (
-	CommandSubject = "update.command.node-1"
-	ResultSubject  = "update.result"
+	CommandSubject       = subjects.CommandPrefix
+	ResultSubject        = subjects.Result
+	NodeRegisterSubject  = subjects.NodeRegister
+	NodeHeartbeatSubject = subjects.NodeHeartbeat
+	NodeGoodbyeSubject   = subjects.NodeGoodbye
 )
 
 type Config struct {
 	Logger        *slog.Logger
 	NATS          *nats.Client
 	OpRepo        operation.OperationRepository
-	Downloader    *filetransfer.Downloader
-	DockerRunner  *docker.Runner
-	HealthChecker *healthcheck.Checker
-	FileDeployer  *fileops.Deployer
+	Downloader    Downloader
+	DockerRunner  DockerRunner
+	HealthChecker HealthChecker
+	FileDeployer  FileDeployer
 	StorageRoot   string
 	OperationCfg  config.OperationConfig
 	SearchClient  *search.Client
+	NodeID        string
+	Heartbeat     *heartbeat.HeartbeatManager
 }
 
 type Server struct {
@@ -42,7 +71,8 @@ func New(cfg Config) *Server {
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	_, err := s.cfg.NATS.Subscribe(CommandSubject, func(msg *natslib.Msg) {
+	commandSubject := CommandSubject + s.cfg.NodeID
+	_, err := s.cfg.NATS.Subscribe(commandSubject, func(msg *natslib.Msg) {
 		s.handleCommand(msg)
 	})
 	if err != nil {
@@ -50,9 +80,22 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
-	s.cfg.Logger.Info("worker started", "subject", CommandSubject)
+	s.cfg.Logger.Info("worker started", "subject", commandSubject)
+
+	var heartbeatDone chan struct{}
+	if s.cfg.Heartbeat != nil {
+		heartbeatDone = make(chan struct{})
+		go func() {
+			defer close(heartbeatDone)
+			s.cfg.Heartbeat.Run(ctx)
+		}()
+	}
 
 	<-ctx.Done()
+
+	if heartbeatDone != nil {
+		<-heartbeatDone
+	}
 
 	s.cfg.Logger.Info("worker shutting down")
 	return nil
@@ -78,8 +121,10 @@ func (s *Server) advanceStatus(
 		return false
 	}
 
-	if err := s.cfg.SearchClient.IndexOperation(ctx, op); err != nil {
-		s.cfg.Logger.Error("failed to index in Elasticsearch", "error", err)
+	if s.cfg.SearchClient != nil {
+		if err := s.cfg.SearchClient.IndexOperation(ctx, op); err != nil {
+			s.cfg.Logger.Error("failed to index in Elasticsearch", "error", err)
+		}
 	}
 
 	return true
