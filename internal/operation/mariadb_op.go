@@ -110,16 +110,21 @@ func (r *MariaDBRepository) AdvanceStatus(
 					WHEN 'DISPATCHED' THEN 1
 					WHEN 'RUNNING' THEN 2
 					WHEN 'TRANSFERRED' THEN 3
-					WHEN 'APPLYING' THEN 4
-					WHEN 'HEALTH_CHECKING' THEN 5
-					WHEN 'SUCCEEDED' THEN 6
-					WHEN 'FAILED' THEN 6
+					WHEN 'BACKUP_CREATED' THEN 4
+					WHEN 'APPLYING' THEN 5
+					WHEN 'HEALTH_CHECKING' THEN 6
+					WHEN 'SUCCEEDED' THEN 7
+					WHEN 'FAILED' THEN 7
+					WHEN 'ROLLING_BACK' THEN 8
+					WHEN 'ROLLBACK_HEALTH_CHECKING' THEN 9
+					WHEN 'ROLLED_BACK' THEN 10
+					WHEN 'ROLLBACK_FAILED' THEN 11
 					ELSE -1
 				END < ?
 				OR (
 					CASE status
-						WHEN 'SUCCEEDED' THEN 6
-						WHEN 'FAILED' THEN 6
+						WHEN 'SUCCEEDED' THEN 7
+						WHEN 'FAILED' THEN 7
 						ELSE -1
 					END = ?
 					AND status = ?
@@ -136,7 +141,7 @@ func (r *MariaDBRepository) AdvanceStatus(
 		now,
 		id,
 		rank,
-		6,
+		7,
 		next,
 	)
 	if err != nil {
@@ -166,16 +171,16 @@ func statusRank(status Status) (int, bool) {
 		return 3, true
 
 	case StatusBackupCreated:
-		return 3, true
-
-	case StatusApplying:
 		return 4, true
 
-	case StatusHealthChecking:
+	case StatusApplying:
 		return 5, true
 
-	case StatusSucceeded:
+	case StatusHealthChecking:
 		return 6, true
+
+	case StatusSucceeded:
+		return 7, true
 
 	case StatusFailed:
 		return 7, true
