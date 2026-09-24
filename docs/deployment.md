@@ -119,7 +119,7 @@ DSN variables are taken from `.env` (`DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PO
 
 ## Scaling & Multiple Workers
 
-Workers are stateless aside from local staging/backup dirs. To run a second worker:
+Workers are stateless aside from local staging dirs. Backups are written under `SERVICES_ROOT/backups/<service>/<filename>.<timestamp>`. To run a second worker:
 
 1. Give it a unique `NODE_ID` (clients target operations by `node_id`).
 2. Mount the same `SERVICES_ROOT` (config files) and `docker.sock`.
