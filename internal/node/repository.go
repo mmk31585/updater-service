@@ -176,7 +176,10 @@ func (r *MariaDBNodeRepository) Goodbye(
 	const query = `
 		UPDATE nodes
 		SET
-			status = 'OFFLINE',
+			status = CASE
+				WHEN status = 'DRAINING' THEN 'DRAINING'
+				ELSE 'OFFLINE'
+			END,
 			lease_expires_at = ?,
 			updated_at = ?
 		WHERE
@@ -214,7 +217,10 @@ func (r *MariaDBNodeRepository) MarkExpired(
 	const query = `
 		UPDATE nodes
 		SET
-			status = 'OFFLINE',
+			status = CASE
+				WHEN status = 'DRAINING' THEN 'DRAINING'
+				ELSE 'OFFLINE'
+			END,
 			updated_at = ?
 		WHERE
 			status IN ('ONLINE', 'DRAINING')

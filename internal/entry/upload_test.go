@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,8 +108,12 @@ func TestOnTusdUploadCreate(t *testing.T) {
 
 	t.Run("unknown operation", func(t *testing.T) {
 		server := New(Config{Logger: testLogger(), OpRepo: newMemoryOperationRepository()})
-		if _, _, err := server.onTusdUploadCreate(uploadHook("missing", "", "", 0)); err == nil {
-			t.Fatal("expected error for unknown operation, got nil")
+		resp, _, err := server.onTusdUploadCreate(uploadHook("missing", "", "", 0))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusNotFound)
 		}
 	})
 
@@ -116,8 +121,12 @@ func TestOnTusdUploadCreate(t *testing.T) {
 		opRepo := newMemoryOperationRepository()
 		opRepo.records["op-1"] = operation.Operation{ID: "op-1", Status: operation.StatusSucceeded}
 		server := New(Config{Logger: testLogger(), OpRepo: opRepo})
-		if _, _, err := server.onTusdUploadCreate(uploadHook("op-1", "", "", 0)); err == nil {
-			t.Fatal("expected error for non-pending operation, got nil")
+		resp, _, err := server.onTusdUploadCreate(uploadHook("op-1", "", "", 0))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if resp.StatusCode != http.StatusConflict {
+			t.Errorf("StatusCode = %d, want %d", resp.StatusCode, http.StatusConflict)
 		}
 	})
 
@@ -212,8 +221,8 @@ func TestOnTusdUploadFinish(t *testing.T) {
 		if err != nil {
 			t.Fatalf("onTusdUploadFinish() error = %v", err)
 		}
-		if resp.StatusCode != 200 {
-			t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
+		if resp.StatusCode != 204 {
+			t.Errorf("StatusCode = %d, want 204", resp.StatusCode)
 		}
 
 		meta, err := fileRepo.Get(context.Background(), "op-1")

@@ -46,7 +46,7 @@ echo ""
 echo "--- Phase 2: Generating 2GB MP4 test file ---"
 rm -rf "$TEST_DATA_DIR"
 mkdir -p "$TEST_DATA_DIR"
-go run test/generate-mp4.go
+(cd test && go run generate-mp4.go)
 EXPECTED_HASH=$(cat "$MP4_HASH_FILE")
 echo "Expected SHA256: $EXPECTED_HASH"
 
@@ -64,7 +64,8 @@ sleep 10
 
 echo "Checking NATS..."
 for i in $(seq 1 30); do
-    if docker exec test-nats nats-server --version >/dev/null 2>&1 || true; then
+    if docker exec test-nats nats-server --version >/dev/null 2>&1; then
+        echo "NATS is ready"
         break
     fi
     sleep 1
@@ -129,6 +130,11 @@ echo "Creating operation..."
 OP_ID=$(curl -s -X POST "$PORTAL/updates" \
     -H "Content-Type: application/json" \
     -d '{"service":"data-service","node_id":"node-1"}' | jq -r .operation_id)
+if [ -z "$OP_ID" ] || [ "$OP_ID" = "null" ]; then
+    echo "Failed to extract operation ID from POST /updates response"
+    curl -s "$PORTAL/updates" || true
+    exit 1
+fi
 echo "Operation ID: $OP_ID"
 
 FILE_SIZE=$(stat -c%s "$MP4_FILE")
@@ -227,12 +233,32 @@ sleep 3
 echo "Restarting worker service..."
 docker start test-worker
 echo "Worker restarted"
-sleep 5
+
+echo "Waiting for worker node to come online..."
+for i in $(seq 1 30); do
+    NODE_STATUS=$(curl -s "$PORTAL/nodes/node-1" | jq -r .status 2>/dev/null || echo "")
+    if [ "$NODE_STATUS" = "ONLINE" ]; then
+        echo "Worker node is online"
+        break
+    fi
+    sleep 1
+done
+if [ "$NODE_STATUS" != "ONLINE" ]; then
+    echo "Worker node did not come online"
+    curl -s "$PORTAL/nodes" || true
+    exit 1
+fi
 
 echo ""
 echo "--- Phase 7: Verifying file integrity ---"
 echo "Verifying uploaded file SHA256..."
-go run test/verify/main.go "$MP4_FILE" "$EXPECTED_HASH"
+WORKER_FILE="/app/transfers/test.mp4"
+WORKER_HASH=$(docker exec test-worker sha256sum "$WORKER_FILE" | awk '{print $1}')
+if [ "$WORKER_HASH" != "$EXPECTED_HASH" ]; then
+    echo "Worker file hash mismatch: expected $EXPECTED_HASH, got $WORKER_HASH"
+    exit 1
+fi
+echo "PASS: SHA256 match"
 
 echo ""
 echo "============================================"

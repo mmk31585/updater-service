@@ -50,7 +50,7 @@ Full details: [architecture.md](architecture.md).
 
 - Rolling out new `config.yaml` (or similar) to services like `data-service`, `hello-service`, etc.
 - Environments where services run as Docker containers on the same host as the worker.
-- Situations requiring an audit trail of who updated what, when, and whether it succeeded.
+- Situations requiring an audit trail of what was updated, when, and whether it succeeded. (The operations record tracks the operation and its status but does not store an authenticated actor identity.)
 
 ## Repository Layout
 

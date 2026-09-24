@@ -54,19 +54,26 @@ func TestNewLoggerDoesNotReturnNil(t *testing.T) {
 }
 
 func TestNewLoggerProductionUsesJSONHandler(t *testing.T) {
-	logger := NewLogger("test-app", "production", "node-1")
-	if logger == nil {
-		t.Fatal("NewLogger returned nil")
+	var buf bytes.Buffer
+	logger := newLogger(&buf, "production")
+	logger.Info("test event", "key", "value")
+	logLine := buf.String()
+	if !strings.Contains(logLine, `"key":"value"`) {
+		t.Errorf("expected JSON output, got: %s", logLine)
 	}
-	_ = logger
 }
 
 func TestNewLoggerDevelopmentUsesTextHandler(t *testing.T) {
-	logger := NewLogger("test-app", "development", "node-1")
-	if logger == nil {
-		t.Fatal("NewLogger returned nil")
+	var buf bytes.Buffer
+	logger := newLogger(&buf, "development")
+	logger.Info("test event", "key", "value")
+	logLine := buf.String()
+	if strings.Contains(logLine, `"key"`) {
+		t.Errorf("expected text output, got: %s", logLine)
 	}
-	_ = logger
+	if !strings.Contains(logLine, "key=value") {
+		t.Errorf("expected key=value in text output, got: %s", logLine)
+	}
 }
 
 func TestNewLoggerDefaultEnv(t *testing.T) {

@@ -99,7 +99,12 @@ func (s *Server) handleCommand(msg *natslib.Msg) {
 	if err != nil {
 		opLogger.Error("update failed", "error", err)
 		if backupPath != "" {
-			s.rollbackOperation(ctx, command, backupPath, err)
+			rollbackCtx, cancelRollback := context.WithTimeout(
+				context.Background(),
+				s.cfg.OperationCfg.OperationTimeout,
+			)
+			defer cancelRollback()
+			s.rollbackOperation(rollbackCtx, command, backupPath, err)
 			return
 		}
 		s.handleExecutionFailure(command.OperationID, err)

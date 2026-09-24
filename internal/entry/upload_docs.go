@@ -23,11 +23,14 @@ var _ = []any{
 //	@Param			Tus-Resumable	header		string			true	"Tus protocol version"	default(1.0.0)
 //	@Param			Upload-Length	header		int				true	"Total upload size in bytes"
 //	@Param			Upload-Metadata	header		string			true	"Base64-encoded metadata: operation_id and filename"
-//	@Success		201				{string}	string			"Upload created"
-//	@Header			201				{string}	Location		"URL of the created upload resource"
-//	@Failure		400				{object}	ErrorResponse	"missing or invalid headers, or operation is not pending"
-//	@Failure		404				{object}	ErrorResponse	"operation not found"
-//	@Router			/uploads [post]
+//
+// @Success        201             {string}      string            "Upload created"
+// @Header        201             {string}       Location          "URL of the created upload resource"
+// @Failure        400             {string}      string            "missing operation_id metadata"
+// @Failure        404             {string}      string            "operation not found"
+// @Failure        409             {string}      string            "operation is not pending"
+// @Failure        500             {string}      string            "repository error"
+// @Router          /uploads [post]
 func uploadCreateDoc() {}
 
 // uploadAppendDoc documents the tus upload append endpoint.
@@ -41,10 +44,11 @@ func uploadCreateDoc() {}
 //	@Param			id				path		string				true	"Upload ID returned in the Location header of POST /uploads"
 //	@Param			Tus-Resumable	header		string				true	"Tus protocol version"	default(1.0.0)
 //	@Param			Upload-Offset	header		int					true	"Byte offset of this chunk within the upload"
-//	@Param			body			body		string				true	"Raw chunk bytes"
-//	@Success		200				{object}	FileUploadResponse	"Final chunk accepted; file metadata returned"
-//	@Success		204				{string}	string				"Chunk accepted, upload not yet complete"
-//	@Failure		400				{object}	ErrorResponse		"invalid content type, offset or checksum"
-//	@Failure		404				{object}	ErrorResponse		"upload not found"
-//	@Router			/uploads/{id} [patch]
+//	@Param			body			body		binary				true	"Raw chunk bytes"
+//	@Success		204				{string}	string				"Chunk accepted"
+//
+// @Header		204	{string}	Upload-Offset	"Final offset of the completed upload"
+// @Failure		400				{object}	ErrorResponse		"invalid content type, offset or checksum"
+// @Failure		404				{object}	ErrorResponse		"upload not found"
+// @Router			/uploads/{id} [patch]
 func uploadAppendDoc() {}

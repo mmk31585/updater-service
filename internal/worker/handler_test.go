@@ -42,7 +42,7 @@ func (r *memoryOperationRepository) Create(_ context.Context, op operation.Opera
 func (r *memoryOperationRepository) Get(_ context.Context, id string) (operation.Operation, error) {
 	op, ok := r.records[id]
 	if !ok {
-		return operation.Operation{}, fmt.Errorf("operation %s not found", id)
+		return operation.Operation{}, operation.ErrNotFound
 	}
 	return op, nil
 }

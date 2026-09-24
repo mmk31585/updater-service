@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/mmk31585/updater-service/internal/config"
 	"github.com/pressly/goose/v3"
@@ -62,11 +64,21 @@ func buildDSN(cfg *config.DBConfig) string {
 	if host == "localhost" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&multiStatements=true&timeout=5s&readTimeout=5s&writeTimeout=5s",
-		cfg.Username,
-		cfg.Password,
-		host,
-		cfg.Port,
-		cfg.Name,
-	)
+	mysqlCfg := mysql.NewConfig()
+	mysqlCfg.User = cfg.Username
+	mysqlCfg.Passwd = cfg.Password
+	mysqlCfg.Net = "tcp"
+	mysqlCfg.Addr = fmt.Sprintf("%s:%s", host, cfg.Port)
+	mysqlCfg.DBName = cfg.Name
+	mysqlCfg.ParseTime = true
+	mysqlCfg.MultiStatements = true
+	connectTimeout := cfg.ConnectTimeout
+	if connectTimeout <= 0 {
+		connectTimeout = 5 * time.Second
+	}
+	mysqlCfg.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		d := &net.Dialer{Timeout: connectTimeout}
+		return d.DialContext(ctx, network, mysqlCfg.Addr)
+	}
+	return mysqlCfg.FormatDSN()
 }

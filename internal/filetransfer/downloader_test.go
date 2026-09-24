@@ -100,9 +100,21 @@ func TestDownloaderDownload(t *testing.T) {
 	expectedHash := hex.EncodeToString(hash[:])
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(testData)))
+			return
+		}
+		rangeHeader := r.Header.Get("Range")
+		var start, end int64
+		fmt.Sscanf(rangeHeader, "bytes=%d-%d", &start, &end)
+		if end == -1 || end >= int64(len(testData)) {
+			end = int64(len(testData)) - 1
+		}
+		slice := testData[start : end+1]
 		w.WriteHeader(http.StatusPartialContent)
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", len(testData)-1, len(testData)))
-		_, _ = w.Write(testData)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(testData)))
+		_, _ = w.Write(slice)
 	}))
 	defer server.Close()
 
@@ -132,7 +144,14 @@ func TestDownloaderDownloadWithRetry(t *testing.T) {
 	maxAttempts := 2
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts++
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(testData)))
+			return
+		}
+		if r.Method == http.MethodGet {
+			attempts++
+		}
 		if attempts < maxAttempts {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return

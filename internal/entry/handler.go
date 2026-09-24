@@ -58,19 +58,18 @@ func advanceOperation(
 	id string,
 	status operation.Status,
 	logger *slog.Logger,
-) error {
+) (bool, error) {
 	updated, err := repo.AdvanceStatus(ctx, id, status)
 	if err != nil {
-		return err
+		return false, err
 	}
-
 	if !updated {
-		return nil
+		return false, nil
 	}
 
 	op, err := repo.Get(ctx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if searchClient != nil {
@@ -81,12 +80,10 @@ func advanceOperation(
 				"status", status,
 				"error", err,
 			)
-
-			return nil
 		}
 	}
 
-	return nil
+	return true, nil
 }
 
 // handleHealth reports the liveness of the service.
@@ -387,18 +384,27 @@ func (s *Server) handleResult(msg *natslib.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	if err := advanceOperation(
+	updated, err := advanceOperation(
 		ctx,
 		s.cfg.OpRepo,
 		s.cfg.SearchClient,
 		result.OperationID,
 		operation.Status(result.Status),
 		s.cfg.Logger,
-	); err != nil {
+	)
+	if err != nil {
 		opLogger.Error(
 			"failed to process operation result",
 			"operation_id", result.OperationID,
 			"error", err,
+		)
+		return
+	}
+	if !updated {
+		opLogger.Info(
+			"operation result not applied (already terminal)",
+			"operation_id", result.OperationID,
+			"status", result.Status,
 		)
 		return
 	}
@@ -423,15 +429,19 @@ func (s *Server) dispatchOperation(ctx context.Context, op operation.Operation, 
 		return errNodeUnavailable
 	}
 
-	if err := advanceOperation(
+	dispatched, err := advanceOperation(
 		ctx,
 		s.cfg.OpRepo,
 		s.cfg.SearchClient,
 		op.ID,
 		operation.StatusDispatched,
 		s.cfg.Logger,
-	); err != nil {
+	)
+	if err != nil {
 		return err
+	}
+	if !dispatched {
+		return fmt.Errorf("operation %s not dispatched", op.ID)
 	}
 
 	cmd := message.UpdateCommand{
@@ -509,8 +519,10 @@ func processNodeRegister(
 		lease = 15 * time.Second
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	now := time.Now().UTC()
-	return repo.Register(context.Background(), node.Node{
+	return repo.Register(ctx, node.Node{
 		ID:             nodeID,
 		InstanceID:     instanceID,
 		Status:         node.StatusOnline,
@@ -551,8 +563,10 @@ func processNodeHeartbeat(
 		lease = 15 * time.Second
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	return repo.Heartbeat(
-		context.Background(),
+		ctx,
 		nodeID,
 		instanceID,
 		time.Now().UTC().Add(lease),
@@ -578,7 +592,9 @@ func processNodeGoodbye(msg *natslib.Msg, repo node.Repository) error {
 		return errors.New("node_id and instance_id are required")
 	}
 
-	return repo.Goodbye(context.Background(), nodeID, instanceID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return repo.Goodbye(ctx, nodeID, instanceID)
 }
 
 func RunNodeMonitor(

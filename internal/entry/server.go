@@ -2,7 +2,6 @@ package entry
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -116,19 +115,22 @@ func (s *Server) newTusdHandler() (*handler.Handler, error) {
 func (s *Server) onTusdUploadCreate(hook handler.HookEvent) (handler.HTTPResponse, handler.FileInfoChanges, error) {
 	operationID := strings.TrimSpace(hook.Upload.MetaData["operation_id"])
 	if operationID == "" {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("Upload-Metadata operation_id is required")
+		return handler.HTTPResponse{StatusCode: http.StatusBadRequest}, handler.FileInfoChanges{}, fmt.Errorf("Upload-Metadata operation_id is required")
 	}
 
 	if s.cfg.OpRepo == nil {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("operation repository is required")
+		return handler.HTTPResponse{StatusCode: http.StatusInternalServerError}, handler.FileInfoChanges{}, fmt.Errorf("operation repository is required")
 	}
 
 	op, err := s.cfg.OpRepo.Get(hook.Context, operationID)
 	if err != nil {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("operation not found")
+		if errors.Is(err, operation.ErrNotFound) {
+			return handler.HTTPResponse{StatusCode: http.StatusNotFound}, handler.FileInfoChanges{}, nil
+		}
+		return handler.HTTPResponse{StatusCode: http.StatusInternalServerError}, handler.FileInfoChanges{}, fmt.Errorf("operation lookup failed: %w", err)
 	}
 	if op.Status != operation.StatusPending {
-		return handler.HTTPResponse{}, handler.FileInfoChanges{}, fmt.Errorf("operation is not pending")
+		return handler.HTTPResponse{StatusCode: http.StatusConflict}, handler.FileInfoChanges{}, nil
 	}
 
 	return handler.HTTPResponse{}, handler.FileInfoChanges{}, nil
@@ -139,7 +141,8 @@ func (s *Server) onTusdUploadFinish(hook handler.HookEvent) (handler.HTTPRespons
 
 	operationID := strings.TrimSpace(info.MetaData["operation_id"])
 	fileName := strings.TrimSpace(info.MetaData["filename"])
-	if fileName == "" {
+	fileName = filepath.Base(fileName)
+	if fileName == "" || fileName == "." || fileName == "/" || fileName == ".." {
 		fileName = "source.bin"
 	}
 	filePath := info.Storage[filestore.StorageKeyPath]
@@ -192,18 +195,11 @@ func (s *Server) onTusdUploadFinish(hook handler.HookEvent) (handler.HTTPRespons
 			"sha256", sum)
 	}
 
-	body, _ := json.Marshal(map[string]string{
-		"operation_id": operationID,
-		"file_name":    fileName,
-		"sha256":       sum,
-	})
-
 	return handler.HTTPResponse{
-		StatusCode: http.StatusOK,
+		StatusCode: http.StatusNoContent,
 		Header: handler.HTTPHeader{
-			"Content-Type": "application/json",
+			"Upload-Offset": fmt.Sprintf("%d", info.Size),
 		},
-		Body: string(body),
 	}, nil
 }
 
@@ -263,9 +259,13 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 
 	case <-ctx.Done():
+		shutdownTimeout := s.cfg.ShutdownTimeout
+		if shutdownTimeout <= 0 {
+			shutdownTimeout = 10 * time.Second
+		}
 		shutdownCtx, cancel := context.WithTimeout(
 			context.Background(),
-			s.cfg.ShutdownTimeout,
+			shutdownTimeout,
 		)
 		defer cancel()
 

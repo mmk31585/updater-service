@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -360,14 +359,14 @@ func (d *Downloader) downloadChunk(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusPartialContent {
-		return fmt.Errorf("expected 206 Partial Content, got %d", resp.StatusCode)
+		return &StatusError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("expected 206 Partial Content, got %d", resp.StatusCode)}
 	}
 
 	expectedBytes := end - start + 1
 	actualBytes := resp.ContentLength
 	if actualBytes != -1 && actualBytes != expectedBytes {
-		return fmt.Errorf("content length mismatch: expected %d, got %d",
-			expectedBytes, actualBytes)
+		return &StatusError{StatusCode: resp.StatusCode, Message: fmt.Sprintf("content length mismatch: expected %d, got %d",
+			expectedBytes, actualBytes)}
 	}
 
 	offset := start
@@ -390,7 +389,7 @@ func (d *Downloader) downloadChunk(
 		if readErr != nil {
 			if readErr == io.EOF {
 				if remaining > 0 {
-					return fmt.Errorf("unexpected EOF: missing %d bytes", remaining)
+					return fmt.Errorf("unexpected EOF: missing %d bytes: %w", remaining, io.ErrUnexpectedEOF)
 				}
 				break
 			}
@@ -479,19 +478,29 @@ func isRetryableError(err error) bool {
 		return false
 	}
 
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	if se, ok := errors.AsType[*StatusError](err); ok {
+		if se.StatusCode == http.StatusTooManyRequests || se.StatusCode >= 500 {
+			return true
+		}
+	}
+
 	if _, ok := errors.AsType[*net.OpError](err); ok {
 		return true
 	}
 
-	if urlErr, ok := errors.AsType[*url.Error](err); ok {
-		if urlErr.Timeout() {
-			return true
-		}
-
-	}
-
 	return false
 }
+
+type StatusError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *StatusError) Error() string { return e.Message }
 
 type DownloadState struct {
 	Version   int     `json:"version"`

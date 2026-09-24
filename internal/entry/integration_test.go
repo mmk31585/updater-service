@@ -124,8 +124,8 @@ func TestUploadToDispatchFlow(t *testing.T) {
 		t.Fatalf("patch upload: %v", err)
 	}
 	defer patchResp.Body.Close()
-	if patchResp.StatusCode != http.StatusOK {
-		t.Fatalf("patch status = %d, want %d; body = %s", patchResp.StatusCode, http.StatusOK, readBody(t, patchResp))
+	if patchResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("patch status = %d, want %d; body = %s", patchResp.StatusCode, http.StatusNoContent, readBody(t, patchResp))
 	}
 
 	// 4. A dispatch command should have been published to the worker.
@@ -230,9 +230,10 @@ func TestUploadRejectedForInvalidOperation(t *testing.T) {
 	tests := []struct {
 		name        string
 		operationID string
+		wantStatus  int
 	}{
-		{name: "unknown operation", operationID: "op-missing"},
-		{name: "operation not pending", operationID: "op-dispatched"},
+		{name: "unknown operation", operationID: "op-missing", wantStatus: http.StatusNotFound},
+		{name: "operation not pending", operationID: "op-dispatched", wantStatus: http.StatusConflict},
 	}
 
 	for _, tc := range tests {
@@ -251,11 +252,8 @@ func TestUploadRejectedForInvalidOperation(t *testing.T) {
 			}
 			defer resp.Body.Close()
 
-			if resp.StatusCode < 400 {
-				t.Fatalf("status = %d, want error; body = %s", resp.StatusCode, readBody(t, resp))
-			}
-			if body := readBody(t, resp); !strings.Contains(body, "operation") {
-				t.Errorf("error body = %q, want it to mention the operation", body)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, tc.wantStatus, readBody(t, resp))
 			}
 		})
 	}

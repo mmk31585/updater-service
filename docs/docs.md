@@ -23,7 +23,7 @@ Full documentation is split by topic:
 ### Startup
 
 ```bash
-docker compose up -d        # NATS (:4222), MariaDB (:3306), Elasticsearch (:9200)
+docker compose up -d nats mariadb elasticsearch  # NATS (:4222), MariaDB (:3306), Elasticsearch (:9200)
 make run-entry              # API server (:8080)
 make run-worker             # background worker
 ```

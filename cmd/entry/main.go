@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -122,7 +123,7 @@ func main() {
 		NodeRepo:             nodeRepo,
 		StorageRoot:          cnf.Services.ServicesRoot,
 		NodeID:               cnf.Node.ID,
-		Addr:                 ":" + cnf.HTTP.Port,
+		Addr:                 net.JoinHostPort(cnf.HTTP.Host, cnf.HTTP.Port),
 		ReadTimeout:          cnf.HTTP.ReadTimeout,
 		ShutdownTimeout:      cnf.HTTP.ShutdownTimeout,
 		NodeHeartbeatTimeout: cnf.Node.HeartbeatTimeout,

@@ -47,10 +47,10 @@ Content-Type: application/json
 | Status | Meaning |
 |--------|---------|
 | `202 Accepted` | Operation created — body: `{"operation_id":"op-xxxx"}` |
-| `400` | Missing/invalid `service` or `node_id` |
+| `400` | Missing `service` or `node_id` (empty field) |
 | `404` | Node does not exist |
 | `409` | Node exists but is not `ONLINE` |
-| `500` | Failed to persist the operation |
+| `500` | Internal error: node lookup, operation ID generation, or persistence failure |
 
 Valid `service` values come from the service catalog (`hello-service`, `config-service`, `test-service`, `data-service`). Discover valid `node_id`s via `GET /nodes`.
 
@@ -87,7 +87,8 @@ curl -X PATCH "http://localhost:8080/uploads/${UPLOAD_ID}" \
   -H "Upload-Offset: ${OFFSET}" \
   --data-binary @chunk.bin
 # 204 → more chunks remain
-# 200 → final chunk: {"operation_id","file_name","file_size","sha256"}
+# 204 → more chunks remain
+# 204 → final chunk: Upload-Offset header set to final offset
 ```
 
 On the **final** chunk, entry synchronously:
