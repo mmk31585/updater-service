@@ -3,7 +3,6 @@ package entry
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,28 +18,33 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/mmk31585/updater-service/internal/message"
 	"github.com/mmk31585/updater-service/internal/nats"
+	"github.com/mmk31585/updater-service/internal/node"
 	"github.com/mmk31585/updater-service/internal/operation"
 	"github.com/mmk31585/updater-service/internal/search"
 	natslib "github.com/nats-io/nats.go"
 )
 
-const (
-	uploadBufferSize      = 1024 * 1024
-	defaultUploadFileName = "source.bin"
-)
+var errNodeUnavailable = errors.New("target node is unavailable")
 
 type Config struct {
-	Logger          *slog.Logger
-	NATS            *nats.Client
-	OpRepo          operation.OperationRepository
-	FileRepo        operation.FileRepository
-	StorageRoot     string
-	NodeID          string
-	Addr            string
-	ReadTimeout     time.Duration
-	ShutdownTimeout time.Duration
-	SearchClient    *search.Client
-	MaxUploadSize   int64
+	Logger               *slog.Logger
+	NATS                 *nats.Client
+	OpRepo               operation.OperationRepository
+	FileRepo             operation.FileRepository
+	NodeRepo             node.Repository
+	StorageRoot          string
+	NodeID               string
+	Addr                 string
+	ReadTimeout          time.Duration
+	ShutdownTimeout      time.Duration
+	NodeHeartbeatTimeout time.Duration
+	SearchClient         *search.Client
+	MaxUploadSize        int64
+
+	TusdUploadDir     string
+	TusdMaxSize       int64
+	TusdBasePath      string
+	TusdNotifyTimeout time.Duration
 }
 
 func writeJSON(c *gin.Context, statusCode int, data any) {
@@ -101,15 +104,17 @@ func (s *Server) handleHealth(c *gin.Context) {
 // handleCreateUpdate registers a new update operation.
 //
 //	@Summary		Create an update operation
-//	@Description	Creates a new pending update operation for a service and returns a unique
-//	              operation id. The operation id is used to upload the update file
-//	              (PUT /updates/{id}/file) and to track progress (GET /updates/{id}).
+//	@Description	Creates a new pending update operation for a service on a worker node and
+//	              returns a unique operation id. Upload the update file via the tus
+//	              resumable upload endpoint, then track progress (GET /updates/{id}).
 //	@Tags			Operations
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		CreateUpdateRequest	true	"Service to update"
+//	@Param			request	body		CreateUpdateRequest	true	"Service and target node"
 //	@Success		202		{object}	CreateUpdateResponse
-//	@Failure		400		{object}	ErrorResponse	"invalid request body or missing service"
+//	@Failure		400		{object}	ErrorResponse	"invalid request body or missing service/node_id"
+//	@Failure		404		{object}	ErrorResponse	"node not found"
+//	@Failure		409		{object}	ErrorResponse	"node is not online"
 //	@Failure		500		{object}	ErrorResponse	"failed to create the operation"
 //	@Router			/updates [post]
 func (s *Server) handleCreateUpdate(c *gin.Context) {
@@ -122,6 +127,32 @@ func (s *Server) handleCreateUpdate(c *gin.Context) {
 
 	if req.Service == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "service is required"})
+		return
+	}
+	if req.NodeID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id is required"})
+		return
+	}
+	if s.cfg.NodeRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "node registry unavailable"})
+		return
+	}
+
+	targetNode, err := s.cfg.NodeRepo.Get(c.Request.Context(), req.NodeID)
+	if errors.Is(err, node.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
+		return
+	}
+	if err != nil {
+		s.cfg.Logger.Error("failed to get target node", "node_id", req.NodeID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get target node"})
+		return
+	}
+	if targetNode.Status != node.StatusOnline {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":  "target node is not online",
+			"status": targetNode.Status,
+		})
 		return
 	}
 
@@ -138,7 +169,7 @@ func (s *Server) handleCreateUpdate(c *gin.Context) {
 		ID:        operationID,
 		Status:    operation.StatusPending,
 		Service:   req.Service,
-		NodeID:    s.cfg.NodeID,
+		NodeID:    req.NodeID,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -185,171 +216,6 @@ func (s *Server) handleGetUpdate(c *gin.Context) {
 	c.JSON(http.StatusOK, OperationStatusResponse{
 		ID:     op.ID,
 		Status: string(op.Status),
-	})
-}
-
-// handleUploadFile stores the update file for a pending operation.
-//
-//	@Summary		Upload an update file
-//	@Description	Uploads the update file for a pending operation. Send it either as
-//	              multipart/form-data with a "file" field or as a raw binary body
-//	              (application/octet-stream). On success the operation is dispatched to
-//	              the worker node for the requested service.
-//	@Tags			Files
-//	@Accept			multipart/form-data
-//	@Produce		json
-//	@Param			id		path		string	true	"Operation ID"
-//	@Param			file	formData	file	true	"Update file to upload"
-//	@Success		202		{object}	FileUploadResponse
-//	@Failure		400		{object}	ErrorResponse	"missing file field or body too large"
-//	@Failure		404		{object}	ErrorResponse	"operation not found"
-//	@Failure		409		{object}	ErrorResponse	"operation is not pending"
-//	@Failure		500		{object}	ErrorResponse	"storage or metadata failure"
-//	@Failure		503		{object}	ErrorResponse	"failed to dispatch the operation"
-//	@Router			/updates/{id}/file [put]
-func (s *Server) handleUploadFile(c *gin.Context) {
-	operationID := c.Param("id")
-
-	op, err := s.cfg.OpRepo.Get(c, operationID)
-	if err != nil {
-		s.cfg.Logger.Error("operation not found", "operation_id", operationID, "error", err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "operation not found"})
-		return
-	}
-
-	if op.Status != operation.StatusPending {
-		c.JSON(http.StatusConflict, gin.H{"error": "operation is not pending"})
-		return
-	}
-
-	if s.cfg.MaxUploadSize > 0 {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, s.cfg.MaxUploadSize)
-	}
-
-	dir := filepath.Join(s.cfg.StorageRoot, "operations", operationID)
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		s.cfg.Logger.Error("failed to create storage directory", "operation_id", operationID, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create storage directory"})
-		return
-	}
-
-	var (
-		src      io.Reader
-		fileName string
-	)
-
-	isMultipart := strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data")
-
-	switch {
-	case isMultipart:
-		header, err := c.FormFile("file")
-		if err != nil {
-			if tooLarge(err) {
-				c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file exceeds maximum upload size"})
-			} else {
-				c.JSON(http.StatusBadRequest, gin.H{"error": `multipart field "file" is required`})
-			}
-			return
-		}
-
-		opened, err := header.Open()
-		if err != nil {
-			s.cfg.Logger.Error("failed to open uploaded file", "operation_id", operationID, "error", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read uploaded file"})
-			return
-		}
-		defer opened.Close()
-
-		src = opened
-		fileName = filepath.Base(header.Filename)
-	default:
-		src = c.Request.Body
-		fileName = defaultUploadFileName
-	}
-
-	tempPath := filepath.Join(dir, "source.part")
-	finalPath := filepath.Join(dir, "source.bin")
-
-	file, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		s.cfg.Logger.Error("failed to create file", "operation_id", operationID, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create file"})
-		return
-	}
-
-	hasher := sha256.New()
-	written, copyErr := io.CopyBuffer(io.MultiWriter(file, hasher), src, make([]byte, uploadBufferSize))
-
-	if copyErr != nil {
-		s.cfg.Logger.Error("file upload failed", "operation_id", operationID, "error", copyErr)
-		_ = file.Close()
-		_ = os.Remove(tempPath)
-		if tooLarge(copyErr) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file exceeds maximum upload size"})
-		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "file upload failed"})
-		}
-		return
-	}
-
-	if !isMultipart && c.Request.ContentLength >= 0 && written != c.Request.ContentLength {
-		s.cfg.Logger.Error("uploaded size does not match Content-Length", "operation_id", operationID)
-		_ = file.Close()
-		_ = os.Remove(tempPath)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "uploaded size does not match Content-Length"})
-		return
-	}
-
-	if err := file.Sync(); err != nil {
-		s.cfg.Logger.Error("failed to sync file", "operation_id", operationID, "error", err)
-		_ = file.Close()
-		_ = os.Remove(tempPath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to sync file"})
-		return
-	}
-
-	if err := file.Close(); err != nil {
-		s.cfg.Logger.Error("failed to close file", "operation_id", operationID, "error", err)
-		_ = os.Remove(tempPath)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to close file"})
-		return
-	}
-
-	sum := hex.EncodeToString(hasher.Sum(nil))
-
-	if err := os.Rename(tempPath, finalPath); err != nil {
-		s.cfg.Logger.Error("failed to finalize file", "operation_id", operationID, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to finalize file"})
-		return
-	}
-
-	fileMeta := operation.FileMetadata{
-		OperationID: operationID,
-		FileName:    fileName,
-		FilePath:    finalPath,
-		FileSize:    written,
-		SHA256:      sum,
-		CreatedAt:   time.Now().UTC(),
-	}
-
-	if err := s.cfg.FileRepo.Create(c, fileMeta); err != nil {
-		s.cfg.Logger.Error("failed to save file metadata", "operation_id", operationID, "error", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file metadata"})
-		return
-	}
-
-	if err := s.dispatchOperation(c, op, fileMeta); err != nil {
-		s.cfg.Logger.Error("failed to dispatch operation", "operation_id", operationID, "error", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to dispatch operation"})
-		return
-	}
-
-	c.JSON(http.StatusAccepted, FileUploadResponse{
-		OperationID: operationID,
-		FileName:    fileName,
-		FileSize:    written,
-		SHA256:      sum,
 	})
 }
 
@@ -498,11 +364,6 @@ func (s *Server) handleSearchOperations(c *gin.Context) {
 	)
 }
 
-func tooLarge(err error) bool {
-	var maxBytesErr *http.MaxBytesError
-	return errors.As(err, &maxBytesErr)
-}
-
 func (s *Server) newOperationID() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
@@ -549,9 +410,21 @@ func (s *Server) handleResult(msg *natslib.Msg) {
 	)
 }
 
-func (s *Server) dispatchOperation(c *gin.Context, op operation.Operation, meta operation.FileMetadata) error {
+func (s *Server) dispatchOperation(ctx context.Context, op operation.Operation, meta operation.FileMetadata) error {
+	if s.cfg.NodeRepo == nil {
+		return errors.New("node repository is required")
+	}
+
+	targetNode, err := s.cfg.NodeRepo.Get(ctx, op.NodeID)
+	if err != nil {
+		return err
+	}
+	if targetNode.Status != node.StatusOnline {
+		return errNodeUnavailable
+	}
+
 	if err := advanceOperation(
-		c.Request.Context(),
+		ctx,
 		s.cfg.OpRepo,
 		s.cfg.SearchClient,
 		op.ID,
@@ -562,12 +435,13 @@ func (s *Server) dispatchOperation(c *gin.Context, op operation.Operation, meta 
 	}
 
 	cmd := message.UpdateCommand{
-		OperationID: op.ID,
-		Service:     op.Service,
-		FileURL:     fmt.Sprintf("%s/internal/operations/%s/file", internalBaseURL(), op.ID),
-		FileName:    meta.FileName,
-		FileSize:    meta.FileSize,
-		FileSHA256:  meta.SHA256,
+		OperationID:  op.ID,
+		Service:      op.Service,
+		NodeInstance: targetNode.InstanceID,
+		FileURL:      fmt.Sprintf("%s/internal/operations/%s/file", internalBaseURL(), op.ID),
+		FileName:     meta.FileName,
+		FileSize:     meta.FileSize,
+		FileSHA256:   meta.SHA256,
 	}
 
 	data, err := json.Marshal(cmd)
@@ -575,7 +449,7 @@ func (s *Server) dispatchOperation(c *gin.Context, op operation.Operation, meta 
 		return err
 	}
 
-	if err := s.cfg.NATS.Publish("update.command."+op.NodeID, data); err != nil {
+	if err := s.cfg.NATS.Publish(CommandSubject+op.NodeID, data); err != nil {
 		return err
 	}
 
@@ -586,8 +460,251 @@ func (s *Server) dispatchOperation(c *gin.Context, op operation.Operation, meta 
 	return nil
 }
 
+func (s *Server) handleNodeRegister(msg *natslib.Msg) {
+	if err := processNodeRegister(msg, s.cfg.NodeRepo, s.cfg.NodeHeartbeatTimeout); err != nil {
+		s.cfg.Logger.Error("failed to process node registration", "error", err)
+	}
+}
+
+func (s *Server) handleNodeHeartbeat(msg *natslib.Msg) {
+	if err := processNodeHeartbeat(msg, s.cfg.NodeRepo, s.cfg.NodeHeartbeatTimeout); err != nil {
+		s.cfg.Logger.Error("failed to process node heartbeat", "error", err)
+	}
+}
+
+func (s *Server) handleNodeGoodbye(msg *natslib.Msg) {
+	if err := processNodeGoodbye(msg, s.cfg.NodeRepo); err != nil {
+		s.cfg.Logger.Error("failed to process node goodbye", "error", err)
+	}
+}
+
+func processNodeRegister(
+	msg *natslib.Msg,
+	repo node.Repository,
+	lease time.Duration,
+) error {
+	if repo == nil {
+		return errors.New("node repository is required")
+	}
+	if msg == nil {
+		return errors.New("node registration message is required")
+	}
+
+	var payload message.NodeRegister
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		return fmt.Errorf("decode node registration: %w", err)
+	}
+
+	nodeID := strings.TrimSpace(payload.NodeID)
+	instanceID := strings.TrimSpace(payload.InstanceID)
+	if nodeID == "" || instanceID == "" {
+		return errors.New("node_id and instance_id are required")
+	}
+
+	startedAt, err := time.Parse(time.RFC3339Nano, payload.StartedAt)
+	if err != nil {
+		return fmt.Errorf("parse started_at: %w", err)
+	}
+	if lease <= 0 {
+		lease = 15 * time.Second
+	}
+
+	now := time.Now().UTC()
+	return repo.Register(context.Background(), node.Node{
+		ID:             nodeID,
+		InstanceID:     instanceID,
+		Status:         node.StatusOnline,
+		Address:        payload.Address,
+		Version:        payload.Version,
+		Capabilities:   payload.Capabilities,
+		LastSeenAt:     now,
+		LeaseExpiresAt: now.Add(lease),
+		StartedAt:      startedAt,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	})
+}
+
+func processNodeHeartbeat(
+	msg *natslib.Msg,
+	repo node.Repository,
+	lease time.Duration,
+) error {
+	if repo == nil {
+		return errors.New("node repository is required")
+	}
+	if msg == nil {
+		return errors.New("node heartbeat message is required")
+	}
+
+	var payload message.NodeHeartbeat
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		return fmt.Errorf("decode node heartbeat: %w", err)
+	}
+
+	nodeID := strings.TrimSpace(payload.NodeID)
+	instanceID := strings.TrimSpace(payload.InstanceID)
+	if nodeID == "" || instanceID == "" {
+		return errors.New("node_id and instance_id are required")
+	}
+	if lease <= 0 {
+		lease = 15 * time.Second
+	}
+
+	return repo.Heartbeat(
+		context.Background(),
+		nodeID,
+		instanceID,
+		time.Now().UTC().Add(lease),
+	)
+}
+
+func processNodeGoodbye(msg *natslib.Msg, repo node.Repository) error {
+	if repo == nil {
+		return errors.New("node repository is required")
+	}
+	if msg == nil {
+		return errors.New("node goodbye message is required")
+	}
+
+	var payload message.NodeGoodbye
+	if err := json.Unmarshal(msg.Data, &payload); err != nil {
+		return fmt.Errorf("decode node goodbye: %w", err)
+	}
+
+	nodeID := strings.TrimSpace(payload.NodeID)
+	instanceID := strings.TrimSpace(payload.InstanceID)
+	if nodeID == "" || instanceID == "" {
+		return errors.New("node_id and instance_id are required")
+	}
+
+	return repo.Goodbye(context.Background(), nodeID, instanceID)
+}
+
+func RunNodeMonitor(
+	ctx context.Context,
+	repo node.Repository,
+	interval time.Duration,
+	logger *slog.Logger,
+) {
+	if repo == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if err := repo.MarkExpired(ctx, now.UTC()); err != nil {
+				logger.Error("failed to expire nodes", "error", err)
+			}
+		}
+	}
+}
+
+func (s *Server) List(c *gin.Context) {
+	if s.cfg.NodeRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "node registry unavailable"})
+		return
+	}
+
+	items, err := s.cfg.NodeRepo.List(c.Request.Context())
+	if err != nil {
+		s.cfg.Logger.Error("failed to list nodes", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list nodes"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"items": items,
+		"total": len(items),
+	})
+}
+
+func (s *Server) Get(c *gin.Context) {
+	if s.cfg.NodeRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "node registry unavailable"})
+		return
+	}
+
+	id := c.Param("id")
+	record, err := s.cfg.NodeRepo.Get(c.Request.Context(), id)
+	if errors.Is(err, node.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
+		return
+	}
+	if err != nil {
+		s.cfg.Logger.Error("failed to get node", "node_id", id, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get node"})
+		return
+	}
+
+	c.JSON(http.StatusOK, record)
+}
+
+func (s *Server) Drain(c *gin.Context) {
+	s.setDraining(c, true)
+}
+
+func (s *Server) Undrain(c *gin.Context) {
+	s.setDraining(c, false)
+}
+
+func (s *Server) setDraining(c *gin.Context, draining bool) {
+	if s.cfg.NodeRepo == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "node registry unavailable"})
+		return
+	}
+
+	id := c.Param("id")
+	record, err := s.cfg.NodeRepo.Get(c.Request.Context(), id)
+	if errors.Is(err, node.ErrNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
+		return
+	}
+	if err != nil {
+		s.cfg.Logger.Error("failed to get node", "node_id", id, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get node"})
+		return
+	}
+	if record.Status == node.StatusOffline {
+		c.JSON(http.StatusConflict, gin.H{"error": "node is offline"})
+		return
+	}
+
+	if err := s.cfg.NodeRepo.SetDraining(c.Request.Context(), id, draining); err != nil {
+		if errors.Is(err, node.ErrNodeOffline) {
+			c.JSON(http.StatusConflict, gin.H{"error": "node is offline"})
+			return
+		}
+		s.cfg.Logger.Error("failed to update node drain state", "node_id", id, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update node"})
+		return
+	}
+
+	status := node.StatusOnline
+	if draining {
+		status = node.StatusDraining
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"node_id": id,
+		"status":  status,
+	})
+}
+
 type CreateUpdateRequest struct {
 	Service string `json:"service" example:"hello-service" enums:"hello-service,config-service,test-service"`
+	NodeID  string `json:"node_id" example:"worker-node"`
 }
 
 type CreateUpdateResponse struct {
