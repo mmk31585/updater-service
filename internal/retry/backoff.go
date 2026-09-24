@@ -14,7 +14,7 @@ func (b Backoff) Delay(retryNumber int) time.Duration {
 
 	delay := b.Initial
 
-	for i := 0; i < retryNumber; i++ {
+	for range retryNumber {
 		delay *= 2
 
 		if delay >= b.Max {
