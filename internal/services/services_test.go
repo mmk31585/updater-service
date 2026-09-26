@@ -44,8 +44,8 @@ func TestNewServiceDefinition(t *testing.T) {
 			service:        "data-service",
 			wantOK:         true,
 			wantContainer:  "data-service",
-			wantConfigPath: filepath.Join(root, "data-service", "config.yaml"),
-			wantHealthURL:  "http://data-service:8080/health",
+			wantConfigPath: filepath.Join(root, "data-service", "config", "config.yaml"),
+			wantHealthURL:  "http://data-service:8081/health",
 		},
 		{
 			name:    "unknown service",
@@ -56,6 +56,7 @@ func TestNewServiceDefinition(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(healthURLEnvKey(tc.service), "")
 			def, ok := NewServiceDefinition(root, tc.service)
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
@@ -73,6 +74,18 @@ func TestNewServiceDefinition(t *testing.T) {
 				t.Errorf("HealthURL = %q, want %q", def.HealthURL, tc.wantHealthURL)
 			}
 		})
+	}
+}
+
+func TestNewServiceDefinitionHealthURLOverride(t *testing.T) {
+	t.Setenv(healthURLEnvKey("data-service"), "http://localhost:8081/health")
+
+	def, ok := NewServiceDefinition("/srv/services", "data-service")
+	if !ok {
+		t.Fatal("data-service not found")
+	}
+	if def.HealthURL != "http://localhost:8081/health" {
+		t.Errorf("HealthURL = %q, want override %q", def.HealthURL, "http://localhost:8081/health")
 	}
 }
 

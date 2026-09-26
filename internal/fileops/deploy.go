@@ -1,6 +1,7 @@
 package fileops
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,22 +13,32 @@ type Deployer struct{}
 func NewDeployer() *Deployer {
 	return &Deployer{}
 }
+
+// Backup copies target to backup. It reports whether a backup was created:
+// a missing target (first-time deployment) is not an error and returns false,
+// since there is nothing to preserve.
 func (d *Deployer) Backup(
 	target string,
 	backup string,
-) error {
-	if _, err := os.Stat(target); err != nil {
-		return fmt.Errorf(
-			"target file does not exist: %w",
-			err,
-		)
-	}
-
+) (bool, error) {
 	if err := os.MkdirAll(
 		filepath.Dir(backup),
 		0755,
 	); err != nil {
-		return err
+		return false, fmt.Errorf(
+			"create backup directory: %w",
+			err,
+		)
+	}
+
+	if _, err := os.Stat(target); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf(
+			"stat target file: %w",
+			err,
+		)
 	}
 
 	tempBackup := backup + ".tmp"
@@ -36,27 +47,27 @@ func (d *Deployer) Backup(
 		target,
 		tempBackup,
 	); err != nil {
-		return fmt.Errorf(
+		return false, fmt.Errorf(
 			"create backup: %w",
 			err,
 		)
 	}
 
 	if err := syncFile(tempBackup); err != nil {
-		return err
+		return false, err
 	}
 
 	if err := os.Rename(
 		tempBackup,
 		backup,
 	); err != nil {
-		return fmt.Errorf(
+		return false, fmt.Errorf(
 			"finalize backup: %w",
 			err,
 		)
 	}
 
-	return nil
+	return true, nil
 }
 func (d *Deployer) Apply(
 	staged string,
@@ -65,6 +76,16 @@ func (d *Deployer) Apply(
 	if _, err := os.Stat(staged); err != nil {
 		return fmt.Errorf(
 			"staged file does not exist: %w",
+			err,
+		)
+	}
+
+	if err := os.MkdirAll(
+		filepath.Dir(target),
+		0755,
+	); err != nil {
+		return fmt.Errorf(
+			"create target directory: %w",
 			err,
 		)
 	}
@@ -104,6 +125,16 @@ func (d *Deployer) Rollback(
 	if _, err := os.Stat(backup); err != nil {
 		return fmt.Errorf(
 			"backup does not exist: %w",
+			err,
+		)
+	}
+
+	if err := os.MkdirAll(
+		filepath.Dir(target),
+		0755,
+	); err != nil {
+		return fmt.Errorf(
+			"create target directory: %w",
 			err,
 		)
 	}

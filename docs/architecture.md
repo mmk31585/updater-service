@@ -174,7 +174,7 @@ Migrations: `migrations/001_operations` → `005_enhance_operation_files`.
 `internal/services` maps a logical `service` name to:
 
 - **Container** name to restart
-- **ConfigPath** under `SERVICES_ROOT` (e.g. `/app/services/data-service/config.yaml`)
+- **ConfigPath** under `SERVICES_ROOT` (e.g. `/app/services/data-service/config/config.yaml`)
 - **HealthURL** to poll after restart
 
 Adding a service = add an entry to this map + ensure the config dir exists on the worker host.

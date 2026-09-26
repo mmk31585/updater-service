@@ -1,2 +1,11 @@
 .idea
 .env
+
+# Runtime artifacts
+/data/
+/update-worker/
+/test/data/
+
+# Compiled binaries
+/worker
+/entry

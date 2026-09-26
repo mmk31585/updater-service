@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type ServiceDefinition struct {
@@ -29,12 +30,24 @@ func NewServiceDefinition(root, service string) (ServiceDefinition, bool) {
 		},
 		"data-service": {
 			Container:  "data-service",
-			ConfigPath: filepath.Join(root, "data-service", "config.yaml"),
-			HealthURL:  "http://data-service:8080/health",
+			ConfigPath: filepath.Join(root, "data-service", "config", "config.yaml"),
+			HealthURL:  "http://data-service:8081/health",
 		},
 	}
 	def, ok := services[service]
-	return def, ok
+	if !ok {
+		return def, false
+	}
+
+	if override := os.Getenv(healthURLEnvKey(service)); override != "" {
+		def.HealthURL = override
+	}
+
+	return def, true
+}
+
+func healthURLEnvKey(service string) string {
+	return "HEALTH_URL_" + strings.ToUpper(strings.ReplaceAll(service, "-", "_"))
 }
 
 func BackupFile(source, backup string) error {

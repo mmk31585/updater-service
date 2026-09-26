@@ -35,7 +35,7 @@ func internalBaseURL() string {
 	if url := os.Getenv("INTERNAL_BASE_URL"); url != "" {
 		return url
 	}
-	return "http://localhost:8080"
+	return "http://entry:8080"
 }
 
 type Server struct {

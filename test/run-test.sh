@@ -52,8 +52,8 @@ echo "Expected SHA256: $EXPECTED_HASH"
 
 echo ""
 echo "--- Phase 2b: Seeding deployable service config ---"
-mkdir -p services/data-service
-printf 'config placeholder\n' > services/data-service/config.yaml
+mkdir -p services/data-service/config
+printf 'config placeholder\n' > services/data-service/config/config.yaml
 
 echo ""
 echo "--- Phase 3: Starting Docker Compose ---"
