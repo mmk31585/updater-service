@@ -1,5 +1,4 @@
 .idea
-.env
 
 # Runtime artifacts
 /data/
@@ -9,3 +8,35 @@
 # Compiled binaries
 /worker
 /entry
+
+# Binaries the E2E scripts build into the test image build contexts. They are
+# ~100 MB of Go objects and are rebuilt on every run.
+/docker/test-entry/entry
+/docker/test-worker/worker
+
+# Real MISP feed archive, kept for local validation only. It is ~174 MB and
+# must never be committed; the tests build their own small archives.
+/misp-feeds.zip
+
+# MISP end-to-end run artifacts: the deployed feed tree, the transfer staging
+# area and the generated test archive.
+/misp-feed/
+/misp-feed-test.zip
+/transfers/
+
+# The E2E test harness builds the migrate binary and empty service directories
+# into the project root for use inside test containers.
+/migrate
+/services/
+
+# Python bytecode from the fake-service contract verifier.
+__pycache__/
+*.pyc
+
+# Per-host deployment env files. These carry real credentials, so they are
+# templates that get filled in on each host and never committed. Note the
+# unanchored .env above also covers .env.entry and .env.worker, but the
+# explicit entries keep the intent readable.
+.env.entry
+.env.worker
+.env
