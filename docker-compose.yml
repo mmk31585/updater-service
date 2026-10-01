@@ -15,6 +15,8 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+    networks:
+      - updater
 
   mariadb:
     image: mariadb:13
@@ -35,6 +37,8 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    networks:
+      - updater
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.19.0
     container_name: update-elasticsearch
@@ -53,6 +57,8 @@ services:
       retries: 10
       start_period: 20s
     restart: unless-stopped
+    networks:
+      - updater
   entry:
     build:
       context: .
@@ -63,6 +69,10 @@ services:
       - "8080:8080"
     environment:
       HTTP_HOST: 0.0.0.0
+      # entry's API port. Set explicitly so it cannot be moved by .env: the
+      # published port below, the healthcheck, and the worker's
+      # INTERNAL_BASE_URL all address entry on 8080.
+      HTTP_PORT: "8080"
       NODE_ID: entry-node
       NODE_ROLE: entry
       APP_NAME: entry-service
@@ -83,6 +93,16 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://entry:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - entry_uploads:/var/lib/update-entry/uploads
+    networks:
+      - updater
 
   worker:
     build:
@@ -90,11 +110,19 @@ services:
       dockerfile: Dockerfile.worker
     container_name: update-worker
     command: ["./worker"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:${HEALTH_ADDR_PORT:-8081}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     environment:
       NODE_ID: worker-node
       NODE_ROLE: worker
       NODE_ADDRESS: worker:8080
+      HTTP_HOST: 0.0.0.0
       NODE_VERSION: dev
+      HEALTH_ADDR_PORT: "8081"
       APP_NAME: worker-service
       DB_HOST: mariadb
       DB_PORT: "3306"
@@ -105,14 +133,60 @@ services:
       SERVICES_ROOT: /app/services
       INTERNAL_BASE_URL: http://entry:8080
       ELASTIC_URL: http://elasticsearch:9200
+      HEALTH_URL_DATA_SERVICE: http://data-service:8080/health
+      HEALTH_URL_MISP_SERVICE: http://misp-service:8080/health
+      MISP_API_URL: http://misp-service:8080
+      MISP_AUTH_API_KEY: test-key
+      MISP_FEED_NAME: updater-feeds
+      MISP_FEED_PROVIDER: updater
+      MISP_OUTPUT_PATH: /opt/misp/files/output
+      MISP_FEED_URL: /var/www/MISP/app/files/output
+      MISP_OUTPUT_OWNER: "33:33"
+      MISP_BACKUP_PATH: /opt/misp/files/backup
+      MISP_BACKUP_RETAIN: "1"
+      MISP_API_TIMEOUT: 30s
+      MISP_VERIFY_TIMEOUT: 2m
+      MISP_VERIFY_INTERVAL: 1s
     env_file: .env
     depends_on:
       nats:
         condition: service_healthy
       mariadb:
         condition: service_healthy
+      entry:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # GVM_COMPOSE_FILE, GVM_FEED_ROOT and GVM_BACKUP_PATH all point inside the
+      # host checkout. The worker reads the feed state files and the compose
+      # file itself, and the feed containers write through their own bind mounts,
+      # so the same directory has to be visible at the same path inside the
+      # worker. Mounting it at a different path would silently break readiness:
+      # the Go code would look for markers the containers never wrote where it
+      # expects them, and every update would roll back.
+      - /mnt/windows/nvme0n1p6/Work/updater/docker/fake-gvm:/mnt/windows/nvme0n1p6/Work/updater/docker/fake-gvm
+      # GVM_WORK_DIR is not inside the checkout: it needs room for the
+      # uncompressed bundle (about 3.7 GiB) and must not be mistaken for feed
+      # data, which GVMConfig.Validate rejects.
+      - gvm-work:/tmp/gvm-work
+      - ./services:/app/services
+      - /opt/misp:/opt/misp:rw
+    networks:
+      - updater
+      - services
 
 volumes:
+  # Staging space for the GVM bundle. A named volume rather than the host /tmp,
+  # which is too small for the uncompressed feed bundle.
+  gvm-work:
   nats_data:
   mariadb_data:
   es_data:
+  entry_uploads:
+
+networks:
+  updater:
+    name: updater
+  services:
+    name: updater-services
+    external: true

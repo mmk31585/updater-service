@@ -10,3 +10,5 @@ Makefile
 .gitignore
 test
 transfers
+.gomod
+gvm-feeds.tar.7z
